@@ -1,5 +1,6 @@
 import type { ApiResult, AuthCredential, Section, User } from '@/types'
-import { signIn, signOut, registerUser, getCurrentUser, createTeacherAccount, getAuthCredentials, saveAuthCredentials } from './api'
+import { demoUsers } from '@/lib/mock-data'
+import { signIn, signOut, registerUser, getCurrentUser, createTeacherAccount, getAuthCredentials, saveAuthCredentials, addMissingDemoUsers } from './api'
 
 export type AuthAccount = AuthCredential
 
@@ -15,15 +16,17 @@ export async function hashPassword(password: string, salt = crypto.getRandomValu
 
 async function ensureSeeds(): Promise<AuthAccount[]> {
   let accounts = await getAuthCredentials()
-  if (accounts.length === 0) {
-    const seeds: Array<{ user: User; password: string }> = [
-      { user: { id: 'student-1', name: 'Amna Ayari', email: 'student@edubac.tn', phone: '22123456', section: 'Mathématiques', role: 'student' }, password: 'Student123!' },
-      { user: { id: 'teacher-1', name: 'Meriem Ben Salah', email: 'teacher@edubac.tn', phone: '55123456', section: 'Mathématiques', role: 'teacher' }, password: 'Teacher123!' },
-      { user: { id: 'admin-1', name: 'Administration', email: 'admin@edubac.tn', phone: '22111111', section: 'Mathématiques', role: 'admin' }, password: 'Admin123!' },
-    ]
-    accounts = await Promise.all(seeds.map(async ({ user, password }) => ({ user, passwordHash: await hashPassword(password) })))
+  const knownIds = new Set(accounts.map((account) => account.user.id))
+  const missingUsers = demoUsers.filter((user) => !knownIds.has(user.id))
+  if (missingUsers.length > 0) {
+    const newAccounts = await Promise.all(missingUsers.map(async (user) => {
+      const password = user.role === 'admin' ? 'Admin123!' : user.role === 'teacher' ? 'Teacher123!' : 'Student123!'
+      return { user, passwordHash: await hashPassword(password) }
+    }))
+    accounts = [...accounts, ...newAccounts]
     await saveAuthCredentials(accounts)
   }
+  await addMissingDemoUsers(demoUsers)
   return accounts
 }
 
@@ -45,13 +48,13 @@ export async function authLogin(identifier: string, password: string): Promise<A
   }
 }
 
-export async function authRegister(input: { name: string; email: string; phone: string; password: string; section: Section }): Promise<ApiResult<User>> {
+export async function authRegister(input: { name: string; email: string; phone: string; password: string; section: Section; sectionId?: string }): Promise<ApiResult<User>> {
   const accounts = await ensureSeeds()
   if (accounts.some((item) => (input.email && item.user.email.toLowerCase() === input.email.trim().toLowerCase())
     || (input.phone && item.user.phone.replace(/\s/g, '') === input.phone.replace(/\s/g, '')))) {
     return { ok: false, error: 'This email is already registered' }
   }
-  const user: User = { id: `student-${Date.now()}`, name: input.name.trim(), email: input.email.trim().toLowerCase(), phone: input.phone.trim(), section: input.section, role: 'student' }
+  const user: User = { id: `student-${Date.now()}`, name: input.name.trim(), email: input.email.trim().toLowerCase(), phone: input.phone.trim(), section: input.section, sectionId: input.sectionId, role: 'student' }
   const account: AuthAccount = { user, passwordHash: await hashPassword(input.password) }
   await registerUser(user)
   await saveAuthCredentials([...accounts, account])

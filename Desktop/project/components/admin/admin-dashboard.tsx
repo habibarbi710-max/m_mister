@@ -3,17 +3,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
-import type { Exam, Lesson, LiveSession, Payment, PlatformSettings, Section, Subject, User } from '@/types'
+import type { LiveSession, Payment, PlatformSettings, Section, Subject, User } from '@/types'
 import * as api from '@/lib/api'
 import { authCreateTeacher } from '@/lib/auth'
-import { emptyLesson, LessonEditor, TeacherExams, TeacherSessions, type LessonFormValues } from '@/components/teacher/teacher-dashboard'
+import { AdminContentManagement } from '@/components/admin/admin-content-management'
 import { useAuth } from '@/components/shared/auth-provider'
 import { useLanguage } from '@/components/shared/language-provider'
 import { translateApiError } from '@/components/shared/api-error'
+import { terminateLiveKitRoom } from '@/lib/livekit-client'
+import { AdminRelationshipsPage } from '@/components/relationships/relationship-pages'
+import { AdminGroupsPage } from '@/components/groups/group-pages'
 
-type AdminTab = 'overview' | 'payments' | 'students' | 'teachers' | 'content' | 'settings'
+type AdminTab = 'overview' | 'payments' | 'students' | 'teachers' | 'content' | 'sessions' | 'groups' | 'settings' | 'relationships'
 
 export function AdminDashboard() {
   const { t } = useLanguage()
@@ -21,36 +24,92 @@ export function AdminDashboard() {
   const [metrics, setMetrics] = useState<Awaited<ReturnType<typeof api.getAdminMetrics>>>()
   const [payments, setPayments] = useState<Payment[]>([])
   const [users, setUsers] = useState<User[]>([])
-  const [lessons, setLessons] = useState<Lesson[]>([])
+  const [sessions, setSessions] = useState<LiveSession[]>([])
   const [subjects, setSubjects] = useState<Subject[]>([])
+  const [paymentsEnabled, setPaymentsEnabled] = useState(false)
   const [query, setQuery] = useState('')
   const [sectionFilter, setSectionFilter] = useState<Section | 'all'>('all')
   async function refresh() {
-    const [stats, paymentRows, userRows, lessonRows, catalog] = await Promise.all([api.getAdminMetrics(), api.getPayments(), api.getUsers(), api.getTeacherLessons(), api.getSubjects()])
+    const [stats, paymentRows, userRows, catalog, sessionRows, settings] = await Promise.all([api.getAdminMetrics(), api.getPayments(), api.getUsers(), api.getSubjects(), api.getLiveSessions(), api.getSettings()])
     setMetrics(stats)
     setPayments(paymentRows)
     setUsers(userRows)
-    setLessons(lessonRows)
     setSubjects(catalog)
+    setSessions(sessionRows)
+    setPaymentsEnabled(settings.paymentsEnabled === true)
   }
   useEffect(() => { void refresh() }, [])
-  const tabs: Array<[AdminTab, string]> = [['overview', t('adminHome')], ['payments', t('paymentHistory')], ['students', t('students')], ['teachers', t('teachers')], ['content', t('courses')], ['settings', t('settings')]]
+  const tabs: Array<[AdminTab, string]> = [['overview', t('adminHome')], ['groups', 'Filières et classes'], ['payments', t('paymentHistory')], ['students', t('students')], ['teachers', t('teachers')], ['content', t('courses')], ['sessions', t('sessions')], ['relationships', 'Modération et engagements'], ['settings', t('settings')]]
   const filteredStudents = users.filter((user) => user.role === 'student'
     && `${user.name} ${user.email} ${user.phone}`.toLowerCase().includes(query.toLowerCase())
     && (sectionFilter === 'all' || user.section === sectionFilter))
   return <section className="app-page admin-layout">
     <nav className="admin-sidebar" aria-label={t('adminHome')}>{tabs.map(([id, label]) => <button className={tab === id ? 'admin-tab active' : 'admin-tab'} key={id} onClick={() => setTab(id)}>{label}</button>)}</nav>
     <div className="admin-content"><h1>{tabs.find(([id]) => id === tab)?.[1]}</h1>
+      {process.env.NODE_ENV === 'development' && <button className="button-soft" type="button" onClick={async () => {
+        if (!window.confirm('Réinitialiser les données de démonstration de ce navigateur ?')) return
+        const result = await api.resetDemoData()
+        if (!result.ok) {
+          toast.error(translateApiError(result.error, t))
+          return
+        }
+        await refresh()
+        toast.success('Les données de démonstration ont été réinitialisées.')
+      }}>Réinitialiser les données de démonstration</button>}
       {tab === 'overview' && <div className="admin-stats">{[
         [t('students'), metrics?.students ?? 0], [t('subscription'), metrics?.activeSubscriptions ?? 0],
-        [t('amount'), metrics?.revenue ?? 0], [t('paymentPending'), metrics?.pendingPayments ?? 0],
+        ...(paymentsEnabled ? [[t('amount'), metrics?.revenue ?? 0], [t('paymentPending'), metrics?.pendingPayments ?? 0]] : []),
+        ['Séances ce mois', metrics?.liveSessionsThisMonth ?? 0],
       ].map(([label, value]) => <article className="stat-card" key={String(label)}><span>{label}</span><b>{value}</b></article>)}</div>}
-      {tab === 'payments' && <PaymentReview payments={payments} refresh={refresh}/>}
-      {tab === 'students' && <section className="admin-table-card"><label>{t('search')}<input value={query} onChange={(event) => setQuery(event.target.value)}/></label><label>{t('section')}<select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value as Section | 'all')}><option value="all">{t('all')}</option>{sectionValues.map(([value, key]) => <option value={value} key={value}>{t(key)}</option>)}</select></label><div className="responsive-table"><table><thead><tr><th>{t('name')}</th><th>{t('email')}</th><th>{t('section')}</th><th>{t('blocked')}</th><th/></tr></thead><tbody>{filteredStudents.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.email}</td><td>{t(sectionValues.find(([value]) => value === student.section)?.[1] ?? 'sectionMath')}</td><td>{student.blocked ? t('blocked') : '—'}</td><td><button onClick={async () => { const result = await api.blockUser(student.id, !student.blocked); if (!result.ok) toast.error(translateApiError(result.error, t)); await refresh() }}>{student.blocked ? t('unblock') : t('block')}</button></td></tr>)}</tbody></table></div>{filteredStudents.length === 0 && <p>{t('noData')}</p>}</section>}
+      {tab === 'payments' && (paymentsEnabled ? <PaymentReview payments={payments} refresh={refresh}/>
+        : <div className="empty-state"><h2>Paiements désactivés</h2><p>Activez les paiements dans les paramètres pour afficher les demandes.</p></div>)}
+      {tab === 'groups' && <AdminGroupsPage/>}
+      {tab === 'students' && <section className="admin-table-card"><label>{t('search')}<input value={query} onChange={(event) => setQuery(event.target.value)}/></label><label>{t('section')}<select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value as Section | 'all')}><option value="all">{t('all')}</option>{sectionValues.map((section) => <option value={section} key={section}>{section}</option>)}</select></label><div className="responsive-table"><table><thead><tr><th>{t('name')}</th><th>{t('email')}</th><th>{t('section')}</th><th>{t('blocked')}</th><th/></tr></thead><tbody>{filteredStudents.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.email}</td><td>{student.section}</td><td>{student.blocked ? t('blocked') : '—'}</td><td><button onClick={async () => { const result = await api.blockUser(student.id, !student.blocked); if (!result.ok) toast.error(translateApiError(result.error, t)); await refresh() }}>{student.blocked ? t('unblock') : t('block')}</button></td></tr>)}</tbody></table></div>{filteredStudents.length === 0 && <p>{t('noData')}</p>}</section>}
       {tab === 'teachers' && <TeacherManagement users={users} subjects={subjects} refresh={refresh}/>}
-      {tab === 'content' && <ContentManagement lessons={lessons} subjects={subjects} refresh={refresh}/>}
+      {tab === 'content' && <AdminContentManagement subjects={subjects} users={users} refresh={refresh}/>}
+      {tab === 'sessions' && <AdminLiveManagement sessions={sessions} refresh={refresh}/>}
       {tab === 'settings' && <SettingsForm/>}
+      {tab === 'relationships' && <AdminRelationshipsPage/>}
     </div>
+  </section>
+}
+
+function AdminLiveManagement({ sessions, refresh }: { sessions: LiveSession[]; refresh: () => Promise<void> }) {
+  const { t } = useLanguage()
+  const { user } = useAuth()
+  const [attendance, setAttendance] = useState<Record<string, number>>({})
+  useEffect(() => {
+    let active = true
+    void Promise.all(sessions.map(async (session) => [session.id, await api.getLiveAttendanceCount(session.id)] as const))
+      .then((counts) => { if (active) setAttendance(Object.fromEntries(counts)) })
+      .catch(() => toast.error(t('unknownError')))
+    return () => { active = false }
+  }, [sessions, t])
+
+  async function cancel(session: LiveSession) {
+    if (session.status === 'live' && session.provider === 'livekit' && user?.role === 'admin') {
+      const ended = await terminateLiveKitRoom(session, user)
+      if (!ended.ok) {
+        toast.error(ended.error)
+        return
+      }
+    }
+    const result = await api.cancelLiveSession(session.id)
+    if (!result.ok) {
+      toast.error(translateApiError(result.error, t))
+      return
+    }
+    await refresh()
+    toast.success(t('sessionCancelled'))
+  }
+
+  const ordered = [...sessions].sort((a, b) => b.date.localeCompare(a.date) || b.startTime.localeCompare(a.startTime))
+  return <section className="admin-table-card admin-live-sessions">
+    <h2>{t('sessions')}</h2>
+    {ordered.length === 0 ? <p>{t('noData')}</p> : ordered.map((session) => <article className="admin-live-session" key={session.id}>
+      <div><h3>{session.title}</h3><p>{session.date} · {session.startTime} · {session.status}</p><small>{attendance[session.id] ?? 0} présences</small></div>
+      {session.status !== 'cancelled' && session.status !== 'ended' && <button className="button-soft" type="button" onClick={() => void cancel(session)}>{t('cancelSession')}</button>}
+    </article>)}
   </section>
 }
 
@@ -68,9 +127,9 @@ function TeacherManagement({ users, subjects, refresh }: { users: User[]; subjec
   const schema = useMemo(() => z.object({
     name: z.string().min(2, t('nameLength')), email: z.string().email(t('invalidEmail')),
     phone: z.string().min(8, t('required')), password: z.string().min(8, t('passwordLength')),
-    section: z.enum(['Mathématiques', 'Sciences expérimentales', 'Technique', 'Informatique']),
+    section: z.string().trim().min(1, t('required')),
   }), [t])
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(schema), defaultValues: { name: '', email: '', phone: '', password: '', section: 'Mathématiques' as const } })
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(schema), defaultValues: { name: '', email: '', phone: '', password: '', section: 'Mathématiques' } })
   useEffect(() => {
     if (!selectedTeacher) { setAssigned([]); return }
     void api.getTeacherAssignments(selectedTeacher).then(setAssigned).catch(() => toast.error(t('unknownError')))
@@ -88,65 +147,51 @@ function TeacherManagement({ users, subjects, refresh }: { users: User[]; subjec
     toast.success(t('subjectsAssigned'))
   }
   const teachers = users.filter((user) => user.role === 'teacher')
-  return <section className="admin-table-card"><h2>{t('teachers')}</h2><form onSubmit={handleSubmit(submit)} noValidate><Field label={t('name')} error={errors.name?.message}><input {...register('name')}/></Field><Field label={t('email')} error={errors.email?.message}><input type="email" {...register('email')}/></Field><Field label={t('phone')} error={errors.phone?.message}><input {...register('phone')}/></Field><Field label={t('password')} error={errors.password?.message}><input type="password" {...register('password')}/></Field><Field label={t('section')} error={errors.section?.message}><select {...register('section')}>{sectionValues.map(([value, key]) => <option value={value} key={value}>{t(key)}</option>)}</select></Field><button disabled={isSubmitting}>{isSubmitting ? t('loading') : t('register')}</button></form>
+  return <section className="admin-table-card"><h2>{t('teachers')}</h2><form onSubmit={handleSubmit(submit)} noValidate><Field label={t('name')} error={errors.name?.message}><input {...register('name')}/></Field><Field label={t('email')} error={errors.email?.message}><input type="email" {...register('email')}/></Field><Field label={t('phone')} error={errors.phone?.message}><input {...register('phone')}/></Field><Field label={t('password')} error={errors.password?.message}><input type="password" {...register('password')}/></Field><Field label={t('section')} error={errors.section?.message}><select {...register('section')}>{sectionValues.map((section) => <option value={section} key={section}>{section}</option>)}</select></Field><button disabled={isSubmitting}>{isSubmitting ? t('loading') : t('register')}</button></form>
     <label>{t('assignSubjects')}<select value={selectedTeacher} onChange={(event) => setSelectedTeacher(event.target.value)}><option value="">{t('teachers')}</option>{teachers.map((teacher) => <option value={teacher.id} key={teacher.id}>{teacher.name}</option>)}</select></label>
     {subjects.map((subject) => <label key={subject.id}><input type="checkbox" checked={assigned.includes(subject.id)} onChange={(event) => setAssigned((current) => event.target.checked ? [...current, subject.id] : current.filter((id) => id !== subject.id))}/>{subject.titleFr}</label>)}<button onClick={() => void assign()} disabled={!selectedTeacher}>{t('assignSubjects')}</button>
   </section>
 }
 
-function ContentManagement({ lessons, subjects, refresh }: { lessons: Lesson[]; subjects: Subject[]; refresh: () => Promise<void> }) {
-  const { t } = useLanguage()
-  const { user } = useAuth()
-  const [editing, setEditing] = useState<LessonFormValues>()
-  const [exams, setExams] = useState<Exam[]>([])
-  const [sessions, setSessions] = useState<LiveSession[]>([])
-  async function refreshRelated() {
-    const [examRows, liveRows] = await Promise.all([api.getTeacherExams(), api.getLiveSessions()])
-    setExams(examRows)
-    setSessions(liveRows)
-  }
-  useEffect(() => { void refreshRelated().catch(() => toast.error(t('unknownError'))) }, [t])
-  const refreshLessons = async () => { await refresh(); await refreshRelated() }
-  return <>
-    <section className="admin-table-card"><button className="button-primary" onClick={() => setEditing(emptyLesson(user?.id ?? ''))}>{t('createLesson')}</button><div className="responsive-table"><table><thead><tr><th>{t('title')}</th><th>{t('subject')}</th><th>{t('status')}</th><th/></tr></thead><tbody>{lessons.map((lesson) => <tr key={lesson.id}><td>{lesson.title}</td><td>{subjects.find((subject) => subject.id === lesson.subjectId)?.titleFr ?? '—'}</td><td>{lesson.status === 'draft' ? t('draft') : t('published')}</td><td><button onClick={() => setEditing(asLessonFormValues(lesson))}>{t('editLesson')}</button><button onClick={async () => { const response = await api.saveLesson({ ...lesson, status: lesson.status === 'draft' ? 'published' : 'draft' }); if (!response.ok) toast.error(translateApiError(response.error, t)); await refresh() }}>{lesson.status === 'draft' ? t('published') : t('draft')}</button><button onClick={async () => { const response = await api.deleteLesson(lesson.id); if (!response.ok) toast.error(translateApiError(response.error, t)); await refresh() }}>{t('delete')}</button></td></tr>)}</tbody></table></div>{lessons.length === 0 && <p>{t('noData')}</p>}</section>
-    <TeacherSessions sessions={sessions.filter((session) => session.teacherId === user?.id || user?.role === 'admin')} refresh={refreshRelated}/>
-    <TeacherExams exams={exams} subjects={subjects} refresh={refreshRelated}/>
-    {editing && <LessonEditor initial={editing} subjects={subjects} close={() => setEditing(undefined)} saved={async () => { await refreshLessons(); setEditing(undefined) }}/>}
-  </>
-}
-
-function asLessonFormValues(lesson: Lesson): LessonFormValues {
-  return {
-    ...lesson, subjectId: lesson.subjectId ?? '', chapterId: lesson.chapterId ?? '',
-    quiz: {
-      ...lesson.quiz,
-      questions: lesson.quiz.questions.map((question) => ({
-        ...question,
-        choices: [question.choices[0] ?? '', question.choices[1] ?? '', question.choices[2] ?? '', question.choices[3] ?? ''],
-      })),
-    },
-  }
-}
-
 function SettingsForm() {
   const { t } = useLanguage()
-  const schema = useMemo(() => z.object({ monthlyPrice: z.number().positive(t('invalidSetting')), paymentInstructions: z.string().min(5, t('required')) }), [t])
-  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<PlatformSettings>({ resolver: zodResolver(schema), defaultValues: { monthlyPrice: 12, paymentInstructions: '' } })
+  const schema = useMemo(() => z.object({
+    monthlyPrice: z.number().positive(t('invalidSetting')),
+    paymentInstructions: z.string(),
+    canCreateSubjects: z.boolean(),
+    paymentsEnabled: z.boolean().optional(),
+    pricingScope: z.enum(['group', 'teacher', 'platform']).optional(),
+    gracePeriodDays: z.number().int().min(0).max(90).optional(),
+  }).superRefine((value, context) => {
+    if (value.paymentsEnabled && value.paymentInstructions.trim().length < 5) {
+      context.addIssue({ code: 'custom', path: ['paymentInstructions'], message: t('required') })
+    }
+  }), [t])
+  const { control, register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<PlatformSettings>({
+    resolver: zodResolver(schema),
+    defaultValues: { monthlyPrice: 12, paymentInstructions: '', canCreateSubjects: true, paymentsEnabled: false, pricingScope: 'group', gracePeriodDays: 7, subscriptionScope: 'platform' },
+  })
+  const paymentsEnabled = useWatch({ control, name: 'paymentsEnabled' })
   useEffect(() => { void api.getSettings().then(reset) }, [reset])
   async function submit(values: PlatformSettings) {
     const result = await api.saveSettings(values)
     if (!result.ok) return toast.error(translateApiError(result.error, t))
     toast.success(t('saved'))
   }
-  return <form className="settings-card" onSubmit={handleSubmit(submit)} noValidate><Field label={t('monthlyPrice')} error={errors.monthlyPrice?.message}><input type="number" {...register('monthlyPrice', { valueAsNumber: true })}/></Field><Field label={t('paymentInstructions')} error={errors.paymentInstructions?.message}><textarea {...register('paymentInstructions')}/></Field><button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : t('save')}</button></form>
+  return <form className="settings-card" onSubmit={handleSubmit(submit)} noValidate>
+    <Field label="Activer les paiements"><input type="checkbox" {...register('paymentsEnabled')}/></Field>
+    {paymentsEnabled && <>
+      <p>Le tarif mensuel est défini par classe. Configurez-le dans « Mes groupes ».</p>
+      <Field label={t('paymentInstructions')} error={errors.paymentInstructions?.message}><textarea {...register('paymentInstructions')}/></Field>
+      <Field label="Délai de grâce (jours)"><input type="number" min="0" max="90" {...register('gracePeriodDays', { valueAsNumber: true })}/></Field>
+      <p>La tarification actuelle est définie par classe.</p>
+    </>}
+    <Field label={t('canCreateSubjects')}><input type="checkbox" {...register('canCreateSubjects')}/></Field>
+    <button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : t('save')}</button>
+  </form>
 }
 
-const sectionValues = [
-  ['Mathématiques', 'sectionMath'],
-  ['Sciences expérimentales', 'sectionScience'],
-  ['Technique', 'sectionTechnical'],
-  ['Informatique', 'sectionComputerScience'],
-] as const
+const sectionValues = ['Mathématiques', 'Sciences expérimentales', 'Technique', 'Économie et gestion', 'Informatique', 'Lettres', 'Sport']
 
 function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
   return <label className="form-field">{label}{children}{error && <small role="alert">{error}</small>}</label>

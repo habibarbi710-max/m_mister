@@ -6,22 +6,33 @@ import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useFieldArray, useForm, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
-import type { Exam, Lesson, LessonInput, LiveSession, Subject } from '@/types'
+import type { Exam, Lesson, LessonVideo, LiveSession, Subject } from '@/types'
 import * as api from '@/lib/api'
 import { useLanguage } from '@/components/shared/language-provider'
 import { useAuth } from '@/components/shared/auth-provider'
 import { translateApiError } from '@/components/shared/api-error'
+import { TeacherLiveSessions } from '@/components/teacher/teacher-live-sessions'
 
-export type LessonFormValues = Omit<LessonInput, 'subjectId' | 'chapterId' | 'duration' | 'order' | 'quiz'> & {
+export type LessonFormValues = {
+  id: string
+  title: string
+  duration: number
+  videoUrl: string
+  videos: LessonVideo[]
+  summary: string
+  pdfUrl: string
+  isFree: boolean
+  teacherId: string
   subjectId: string
   chapterId: string
-  duration: number
+  status: 'draft' | 'published'
   order: number
   exercises: Array<{ prompt: string; correction: string }>
   quiz: { id: string; title: string; questions: Array<{ id: string; prompt: string; choices: [string, string, string, string]; answer: number; explanation: string }> }
 }
 export const emptyLesson = (teacherId: string): LessonFormValues => ({
   id: `lesson-${Date.now()}`, title: '', duration: 30, videoUrl: '', summary: '', pdfUrl: '',
+  videos: [],
   exercises: [{ prompt: '', correction: '' }],
   quiz: { id: `quiz-${Date.now()}`, title: '', questions: [{ id: `question-${Date.now()}`, prompt: '', choices: ['', '', '', ''], answer: 0, explanation: '' }] },
   isFree: false, teacherId, subjectId: '', chapterId: '', status: 'draft', order: 0,
@@ -64,7 +75,7 @@ export function TeacherDashboard() {
   }
   return <section className="app-page teacher-panel">
     <header className="page-heading"><div><h1>{t('teacherHome')}</h1><p>{user?.name}</p></div><button className="button-primary" onClick={() => setEditing(emptyLesson(user?.id ?? ''))}>{t('createLesson')}</button></header>
-    <div className="dashboard-stats"><Stat label={t('createLesson')} value={String(lessons.length)}/><Stat label={t('views')} value={String(lessons.reduce((sum, lesson) => sum + lesson.views, 0))}/><Stat label={t('liveSession')} value={String(sessions.filter((session) => !session.cancelled && new Date(`${session.date}T${session.time}:00`).getTime() >= now).length)}/></div>
+    <div className="dashboard-stats"><Stat label={t('createLesson')} value={String(lessons.length)}/><Stat label={t('views')} value={String(lessons.reduce((sum, lesson) => sum + lesson.views, 0))}/><Stat label={t('liveSession')} value={String(sessions.filter((session) => session.status === 'scheduled' && new Date(`${session.date}T${session.startTime}:00+01:00`).getTime() >= now || session.status === 'live').length)}/></div>
     <section id="lessons" className="admin-table-card"><h2>{t('courses')}</h2>{lessons.length === 0 && <p>{t('noData')}</p>}<div className="teacher-cards">{lessons.map((lesson, index) => <article className="teacher-card" key={lesson.id}>
       <h3>{lesson.title}</h3><span>{lesson.status === 'draft' ? t('draft') : t('published')} · {lesson.isFree ? t('free') : t('paid')}</span>
       <p>{t('views')}: {lesson.views}</p>
@@ -81,6 +92,10 @@ export function LessonEditor({ initial, subjects, close, saved }: { initial: Les
   const { t } = useLanguage()
   const schema = useMemo(() => z.object({
     id: z.string(), title: z.string().trim().min(2, t('nameLength')), duration: z.number().int(t('required')).positive(t('required')),
+    videos: z.array(z.object({
+      id: z.string(), title: z.string(), provider: z.enum(['bunny', 'vimeo', 'youtube', 'mp4']),
+      url: z.string(), durationSeconds: z.number().nonnegative(), order: z.number().int(),
+    })),
     videoUrl: z.string().url(t('videoError')).refine((value) => /(^|\.)((youtube\.com)|(youtu\.be)|(vimeo\.com)|(bunnycdn\.com)|(b-cdn\.net)|(iframe\.mediadelivery\.net))($|\/)/i.test(new URL(value).hostname), t('videoError')),
     summary: z.string().min(10, t('required')), pdfUrl: z.string(), isFree: z.boolean(),
     teacherId: z.string(), subjectId: z.string().min(1, t('required')), chapterId: z.string().min(1, t('required')),
@@ -130,47 +145,32 @@ export function LessonEditor({ initial, subjects, close, saved }: { initial: Les
 }
 
 export function TeacherSessions({ sessions, refresh }: { sessions: LiveSession[]; refresh: () => Promise<void> }) {
-  const { t } = useLanguage()
-  const { user } = useAuth()
-  const [editingId, setEditingId] = useState('')
-  const schema = useMemo(() => z.object({ title: z.string().min(2, t('nameLength')), date: z.string().min(1, t('required')), time: z.string().min(1, t('required')), meetingUrl: z.string().url(t('urlInvalid')), replay: z.union([z.string().url(t('urlInvalid')), z.literal('')]) }), [t])
-  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(schema), defaultValues: { title: '', date: '', time: '', meetingUrl: '', replay: '' } })
-  async function submit(values: { title: string; date: string; time: string; meetingUrl: string; replay?: string }) {
-    const teacher = user
-    if (!teacher) return
-    const result = editingId
-      ? await api.updateLiveSession(editingId, values)
-      : await api.createLiveSession({ ...values, teacher: teacher.name, teacherId: teacher.id })
-    if (!result.ok) return toast.error(translateApiError(result.error, t))
-    reset()
-    setEditingId('')
-    await refresh()
-    toast.success(t('sessionSaved'))
-  }
-  async function cancel(session: LiveSession) {
-    const result = await api.cancelLiveSession(session.id)
-    if (!result.ok) return toast.error(translateApiError(result.error, t))
-    await refresh()
-    toast.success(t('sessionCancelled'))
-  }
-  return <section id="sessions" className="admin-table-card"><h2>{t('sessions')}</h2><form onSubmit={handleSubmit(submit)} noValidate><Field label={t('title')} error={errors.title?.message}><input {...register('title')}/></Field><Field label={t('date')} error={errors.date?.message}><input type="date" {...register('date')}/></Field><Field label={t('time')} error={errors.time?.message}><input type="time" {...register('time')}/></Field><Field label={t('meetingUrl')} error={errors.meetingUrl?.message}><input {...register('meetingUrl')}/></Field><Field label={t('replay')} error={errors.replay?.message}><input {...register('replay')}/></Field><button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : editingId ? t('save') : t('createSession')}</button></form>{sessions.length === 0 && <p>{t('noData')}</p>}{sessions.map((session) => <article key={session.id}><span>{session.title} · {session.date} {session.time}</span><button onClick={() => { setEditingId(session.id); reset({ title: session.title, date: session.date, time: session.time, meetingUrl: session.meetingUrl, replay: session.replay ?? '' }) }}>{t('editLesson')}</button><button onClick={() => void cancel(session)} disabled={session.cancelled}>{t('cancelSession')}</button></article>)}</section>
+  return <TeacherLiveSessions sessions={sessions} refresh={refresh} />
 }
 
 export function TeacherExams({ exams, subjects, refresh }: { exams: Exam[]; subjects: Subject[]; refresh: () => Promise<void> }) {
   const { t } = useLanguage()
+  const { user } = useAuth()
   const schema = useMemo(() => z.object({
     id: z.string(), subjectId: z.string().min(1, t('required')), year: z.number().int(t('required')).min(1990, t('required')).max(2100, t('required')),
     session: z.string().min(2, t('required')), statement: z.string().min(10, t('required')), correction: z.string().min(10, t('required')),
+    ownerId: z.string().min(1), status: z.enum(['draft', 'published']), order: z.number().int().nonnegative(),
+    createdAt: z.string().datetime(), updatedAt: z.string().datetime(), teacherId: z.string().optional(),
   }), [t])
-  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<Exam>({ resolver: zodResolver(schema), defaultValues: { id: '', subjectId: '', year: new Date().getFullYear(), session: '', statement: '', correction: '' } })
+  const emptyExam: Exam = {
+    id: '', ownerId: user?.id ?? '', status: 'draft', order: 0,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    subjectId: '', year: new Date().getFullYear(), session: '', statement: '', correction: '', teacherId: user?.id,
+  }
+  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<Exam>({ resolver: zodResolver(schema), defaultValues: emptyExam })
   async function submit(values: Exam) {
     const result = await api.saveExam({ ...values, id: values.id || `exam-${crypto.randomUUID()}` })
     if (!result.ok) return toast.error(translateApiError(result.error, t))
-    reset({ id: '', subjectId: '', year: new Date().getFullYear(), session: '', statement: '', correction: '' })
+    reset({ ...emptyExam, id: '', subjectId: '', year: new Date().getFullYear(), session: '', statement: '', correction: '' })
     await refresh()
     toast.success(t('saved'))
   }
-  return <section id="exams" className="admin-table-card"><h2>{t('exams')}</h2><form onSubmit={handleSubmit(submit)} noValidate><Field label={t('title')} error={errors.session?.message}><input {...register('session')}/></Field><Field label={t('subject')} error={errors.subjectId?.message}><select {...register('subjectId')}><option value="">{t('subject')}</option>{subjects.map((subject) => <option value={subject.id} key={subject.id}>{subject.titleFr}</option>)}</select></Field><Field label={t('date')} error={errors.year?.message}><input type="number" {...register('year', { valueAsNumber: true })}/></Field><Field label={t('summary')} error={errors.statement?.message}><textarea {...register('statement')}/></Field><Field label={t('correction')} error={errors.correction?.message}><textarea {...register('correction')}/></Field><button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : t('save')}</button></form>{exams.length === 0 && <p>{t('noData')}</p>}{exams.map((exam) => <article key={exam.id}><span>{exam.subjectId} · {exam.year} · {exam.session}</span><button onClick={() => reset(exam)}>{t('editLesson')}</button><button onClick={async () => { const result = await api.deleteExam(exam.id); if (!result.ok) toast.error(translateApiError(result.error, t)); await refresh() }}>{t('delete')}</button></article>)}</section>
+  return <section id="exams" className="admin-table-card"><h2>{t('exams')}</h2><form onSubmit={handleSubmit(submit)} noValidate><Field label={t('title')} error={errors.session?.message}><input {...register('session')}/></Field><Field label={t('subject')} error={errors.subjectId?.message}><select {...register('subjectId')}><option value="">{t('subject')}</option>{subjects.map((subject) => <option value={subject.id} key={subject.id}>{subject.titleFr}</option>)}</select></Field><Field label={t('date')} error={errors.year?.message}><input type="number" {...register('year', { valueAsNumber: true })}/></Field><Field label={t('summary')} error={errors.statement?.message}><textarea {...register('statement')}/></Field><Field label={t('correction')} error={errors.correction?.message}><textarea {...register('correction')}/></Field><Field label={t('status')}><select {...register('status')}><option value="draft">{t('draft')}</option><option value="published">{t('published')}</option></select></Field><button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : t('save')}</button></form>{exams.length === 0 && <p>{t('noData')}</p>}{exams.map((exam) => <article key={exam.id}><span>{exam.subjectId} · {exam.year} · {exam.session}</span><button onClick={() => reset(exam)}>{t('editLesson')}</button><button onClick={async () => { const result = await api.deleteExam(exam.id); if (!result.ok) toast.error(translateApiError(result.error, t)); await refresh() }}>{t('delete')}</button></article>)}</section>
 }
 
 function QuizAverage({ lessonId, label }: { lessonId: string; label: string }) {

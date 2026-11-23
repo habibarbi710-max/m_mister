@@ -1,12 +1,13 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
 import { toast } from 'sonner'
 import { CreditCard } from 'lucide-react'
-import type { User } from '@/types'
+import type { BacSection, User } from '@/types'
 import * as api from '@/lib/api'
 import { authChangePassword } from '@/lib/auth'
 import { useAuth } from '@/components/shared/auth-provider'
@@ -16,10 +17,11 @@ import { translateApiError } from '@/components/shared/api-error'
 export function StudentProfile() {
   const { t } = useLanguage()
   const { user, setUser } = useAuth()
+  const [sections, setSections] = useState<BacSection[]>([])
   const schema = useMemo(() => z.object({
     name: z.string().trim().min(2, t('nameLength')),
     phone: z.string().trim().regex(/^\+?[\d\s()-]{8,}$/, t('identifierInvalid')),
-    section: z.enum(['Mathématiques', 'Sciences expérimentales', 'Technique', 'Informatique']),
+    section: z.string().trim().min(1, t('required')),
     currentPassword: z.string().optional(),
     newPassword: z.string().optional(),
   }).refine((value) => !value.newPassword || Boolean(value.currentPassword), { path: ['currentPassword'], message: t('required') })
@@ -31,6 +33,9 @@ export function StudentProfile() {
   useEffect(() => {
     if (user) reset({ name: user.name, phone: user.phone, section: user.section, currentPassword: '', newPassword: '' })
   }, [reset, user])
+  useEffect(() => {
+    void api.listSections().then(setSections).catch(() => toast.error(t('unknownError')))
+  }, [t])
   async function submit(values: { name: string; phone: string; section: User['section']; currentPassword?: string; newPassword?: string }) {
     if (!user) return
     try {
@@ -41,7 +46,10 @@ export function StudentProfile() {
           return
         }
       }
-      const updated = await api.updateProfile({ ...user, name: values.name, phone: values.phone, section: values.section })
+      const updated = await api.updateProfile({
+        ...user, name: values.name, phone: values.phone, section: values.section,
+        sectionId: sections.find((section) => section.name === values.section)?.id,
+      })
       setUser(updated)
       toast.success(t('profileSaved'))
     } catch {
@@ -51,7 +59,7 @@ export function StudentProfile() {
   return <section className="app-page"><header className="page-heading"><div><p className="section-kicker">Votre espace</p><h1>{t('profile')}</h1><p>Gérez vos informations et mettez à jour votre mot de passe.</p></div></header><form className="profile-form" onSubmit={handleSubmit(submit)} noValidate>
     <Field label={t('name')} error={errors.name?.message}><input {...register('name')}/></Field>
     <Field label={t('phone')} error={errors.phone?.message}><input {...register('phone')} inputMode="tel"/></Field>
-    <Field label={t('section')} error={errors.section?.message}><select {...register('section')}><option value="Mathématiques">{t('sectionMath')}</option><option value="Sciences expérimentales">{t('sectionScience')}</option><option value="Technique">{t('sectionTechnical')}</option><option value="Informatique">{t('sectionComputerScience')}</option></select></Field>
+    <Field label={t('section')} error={errors.section?.message}><select {...register('section')}>{!sections.some((section) => section.name === user?.section) && user?.section && <option value={user.section}>{user.section}</option>}{sections.map((section) => <option value={section.name} key={section.id}>{section.name}</option>)}</select></Field>
     <Field label={t('currentPassword')} error={errors.currentPassword?.message}><input {...register('currentPassword')} type="password"/></Field>
     <Field label={t('newPassword')} error={errors.newPassword?.message}><input {...register('newPassword')} type="password"/></Field>
     <button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : t('save')}</button>
@@ -63,6 +71,8 @@ export function SubscriptionPage() {
   const [paymentRows, setPaymentRows] = useState<Awaited<ReturnType<typeof api.getMyPayments>>>([])
   const [instructions, setInstructions] = useState('')
   const [monthlyPrice, setMonthlyPrice] = useState(12)
+  const [paymentsEnabled, setPaymentsEnabled] = useState(false)
+  const [pricingScope, setPricingScope] = useState<'group' | 'teacher' | 'platform'>('group')
   const [receipt, setReceipt] = useState<File>()
   const [selectedPlan, setSelectedPlan] = useState<'monthly' | 'quarterly' | 'annual'>('quarterly')
   const [saving, setSaving] = useState(false)
@@ -73,6 +83,8 @@ export function SubscriptionPage() {
       setPaymentRows(rows)
       setInstructions(settings.paymentInstructions)
       setMonthlyPrice(settings.monthlyPrice)
+      setPaymentsEnabled(settings.paymentsEnabled === true)
+      setPricingScope(settings.pricingScope ?? 'group')
     })
   }, [])
   const plans = { monthly: monthlyPrice, quarterly: monthlyPrice * 3, annual: monthlyPrice * 10 }
@@ -93,6 +105,17 @@ export function SubscriptionPage() {
       setSaving(false)
     }
   }
+  if (!paymentsEnabled) return <section className="app-page">
+    <header className="page-heading"><div><p className="section-kicker">Accès aux classes</p><h1>{t('subscription')}</h1>
+      <p>Les paiements sont désactivés. Les inscriptions acceptées donnent accès aux ressources de la classe.</p></div></header>
+    <div className="empty-state"><CreditCard aria-hidden="true"/><h2>Paiements désactivés</h2>
+      <p>Aucune formule ni aucun reçu n’est demandé pour le moment.</p></div>
+  </section>
+  if (pricingScope === 'group') return <section className="app-page">
+    <header className="page-heading"><div><p className="section-kicker">Paiement par classe</p><h1>{t('subscription')}</h1>
+      <p>Les paiements mensuels se gèrent dans chaque classe acceptée. Consultez le statut et transmettez votre reçu depuis « Mes classes ».</p></div></header>
+    <Link className="button-primary" href="/student/groups">Ouvrir Mes classes</Link>
+  </section>
   const planLabels = { monthly: t('planMonthly'), quarterly: t('planQuarterly'), annual: t('planAnnual') }
   return <section className="app-page"><header className="page-heading"><div><p className="section-kicker">Accès aux contenus premium</p><h1>{t('subscription')}</h1><p>Choisissez une formule, effectuez le paiement puis envoyez le reçu pour validation.</p></div></header><ol className="payment-stepper"><li className="is-current"><span>1</span><strong>Choisir une formule</strong></li><li><span>2</span><strong>Effectuer le paiement</strong></li><li><span>3</span><strong>Envoyer le reçu</strong></li><li><span>4</span><strong>Validation</strong></li></ol><section className="payment-instructions"><h2>{t('paymentInstructions')}</h2><pre>{instructions}</pre></section><form className="payment-card" onSubmit={handleSubmit(submit)} noValidate>
     <Field label={t('plan')} error={errors.plan?.message}><select {...register('plan')} value={selectedPlan} onChange={(event) => {

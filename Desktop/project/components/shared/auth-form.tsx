@@ -7,14 +7,22 @@ import { toast } from 'sonner'
 import { BookOpenCheck, GraduationCap, ShieldCheck } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { useState } from 'react'
-import type { Section, User } from '@/types'
+import { useEffect, useState } from 'react'
+import type { BacSection, Section, User } from '@/types'
 import { authLogin, authRegister } from '@/lib/auth'
+import * as api from '@/lib/api'
 import { useAuth } from './auth-provider'
 import { useLanguage } from './language-provider'
 
-const sections: Section[] = ['Mathématiques', 'Sciences expérimentales', 'Technique', 'Informatique']
-const sectionTranslationKeys = ['sectionMath', 'sectionScience', 'sectionTechnical', 'sectionComputerScience'] as const
+const fallbackSections: BacSection[] = [
+  { id: 'math', name: 'Mathématiques', order: 0, active: true },
+  { id: 'science', name: 'Sciences expérimentales', order: 1, active: true },
+  { id: 'technical', name: 'Technique', order: 2, active: true },
+  { id: 'economy', name: 'Économie et gestion', order: 3, active: true },
+  { id: 'computer-science', name: 'Informatique', order: 4, active: true },
+  { id: 'letters', name: 'Lettres', order: 5, active: true },
+  { id: 'sport', name: 'Sport', order: 6, active: true },
+]
 type FormValues = { name?: string; identifier: string; password: string; section: Section }
 
 export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
@@ -22,21 +30,33 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
   const { setUser } = useAuth()
   const router = useRouter()
   const [serverError, setServerError] = useState('')
+  const [sections, setSections] = useState(fallbackSections)
   const schema = z.object({
     name: z.string().trim().optional(),
     identifier: z.string().trim().min(1, t('required')),
     password: z.string().min(8, t('passwordLength')),
-    section: z.enum(['Mathématiques', 'Sciences expérimentales', 'Technique', 'Informatique']),
+    section: z.string().trim().min(1, t('required')),
   }).superRefine((values, context) => {
     if (mode === 'register' && (values.name?.length ?? 0) < 2) context.addIssue({ code: 'custom', path: ['name'], message: t('nameLength') })
     if (mode === 'register' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.identifier) && !/^\+?[\d\s()-]{8,}$/.test(values.identifier)) {
       context.addIssue({ code: 'custom', path: ['identifier'], message: t('identifierInvalid') })
     }
   })
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<FormValues>({
+  const { register, handleSubmit, setValue, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { identifier: '', password: '', section: sections[0] },
+    defaultValues: { identifier: '', password: '', section: fallbackSections[0].name },
   })
+  useEffect(() => {
+    let active = true
+    void api.listSections().then((rows) => {
+      if (!active || rows.length === 0) return
+      setSections(rows)
+      setValue('section', rows[0].name)
+    }).catch(() => {
+      if (active) toast.error('Impossible de charger les filières.')
+    })
+    return () => { active = false }
+  }, [setValue])
 
   async function submit(values: FormValues) {
     setServerError('')
@@ -47,6 +67,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
           name: values.name ?? '', email: values.identifier.includes('@') ? values.identifier : '',
           phone: values.identifier.includes('@') ? '' : values.identifier,
           password: values.password, section: values.section,
+          sectionId: sections.find((section) => section.name === values.section)?.id,
         })
       if (!result.ok) {
         const message = result.error === 'Email or password is incorrect' ? t('loginError')
@@ -75,7 +96,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
         {mode === 'register' && <Field label={t('name')} error={errors.name?.message}><input {...register('name')} autoComplete="name" /></Field>}
         <Field label={mode === 'register' ? t('emailOrPhone') : t('emailOrPhone')} error={errors.identifier?.message}><input {...register('identifier')} autoComplete="username" /></Field>
         <Field label={t('password')} error={errors.password?.message}><input {...register('password')} type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} /></Field>
-        {mode === 'register' && <Field label={t('section')} error={errors.section?.message}><select {...register('section')}>{sections.map((section, index) => <option key={section} value={section}>{t(sectionTranslationKeys[index])}</option>)}</select></Field>}
+        {mode === 'register' && <Field label={t('section')} error={errors.section?.message}><select {...register('section')}>{sections.map((section) => <option key={section.id} value={section.name}>{section.name}</option>)}</select></Field>}
         {serverError && <p role="alert">{serverError}</p>}
         <button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : t('submit')}</button>
         <p><Link href={mode === 'login' ? '/register' : '/login'}>{mode === 'login' ? t('register') : t('login')}</Link></p>

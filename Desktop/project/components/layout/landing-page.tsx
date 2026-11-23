@@ -12,23 +12,22 @@ import type { PlatformSettings, Subject } from '@/types'
 import { toast } from 'sonner'
 
 const learningSteps = [
-  { icon: BookOpen, title: 'Choisissez une matière', text: 'Retrouvez les cours organisés par matière et par chapitre.' },
-  { icon: PlayCircle, title: 'Apprenez à votre rythme', text: 'Suivez le cours, consultez son résumé et travaillez les exercices.' },
-  { icon: ClipboardCheck, title: 'Entraînez-vous au Bac', text: 'Testez vos connaissances et révisez avec les annales disponibles.' },
+  { icon: BookOpen, title: 'Choisissez une classe', text: 'Trouvez un groupe selon votre filière et la matière à travailler.' },
+  { icon: PlayCircle, title: 'Suivez les séances', text: 'Retrouvez les cours, les horaires et les annonces du professeur.' },
+  { icon: ClipboardCheck, title: 'Suivez vos progrès', text: 'Consultez les devoirs, les présences et les notes dans votre dossier.' },
 ]
 
 const platformFeatures = [
   { icon: GraduationCap, title: 'Cours structurés', text: 'Des contenus classés selon les matières et chapitres du Bac tunisien.' },
   { icon: CheckCircle2, title: 'Exercices corrigés', text: 'Mettez en pratique les notions avec des corrections et des explications.' },
-  { icon: Video, title: 'Séances en direct', text: 'Retrouvez les séances et leurs replays lorsqu’ils sont proposés.' },
-  { icon: ShieldCheck, title: 'Un espace personnel', text: 'Suivez votre progression, vos résultats et votre abonnement au même endroit.' },
+  { icon: Video, title: 'Séances en direct', text: 'Retrouvez les séances hebdomadaires de vos classes.' },
+  { icon: ShieldCheck, title: 'Un espace personnel', text: 'Suivez vos présences, vos devoirs, vos notes et votre progression.' },
 ]
 
 const faqItems = [
-  { question: 'Comment commencer à apprendre ?', answer: 'Créez un compte, choisissez une matière et ouvrez un cours gratuit depuis le catalogue.' },
-  { question: 'Comment accéder aux cours payants ?', answer: 'Choisissez une formule, suivez les instructions de paiement et envoyez votre reçu. L’accès est activé après validation.' },
-  { question: 'Puis-je suivre mes résultats ?', answer: 'Votre tableau de bord rassemble les leçons terminées, la progression par matière et les résultats des quiz.' },
-  { question: 'Les séances en direct sont-elles toujours disponibles ?', answer: 'Les séances et leurs replays apparaissent lorsqu’un enseignant les a publiés. Les liens de réunion sont réservés aux abonnés actifs.' },
+  { question: 'Comment rejoindre une classe ?', answer: 'Choisissez votre filière, trouvez une classe et envoyez une demande au professeur.' },
+  { question: 'Comment suivre mes résultats ?', answer: 'Mon dossier rassemble vos présences, le cahier de textes, les devoirs et les notes.' },
+  { question: 'Qui fixe l’horaire des séances ?', answer: 'Le professeur propose plusieurs créneaux et fixe celui qui convient au groupe.' },
 ]
 
 export function LandingPage() {
@@ -40,13 +39,6 @@ export function LandingPage() {
     void api.getSubjects().then(setSubjects).catch(() => toast.error(t('unknownError')))
     void api.getSettings().then(setSettings).catch(() => toast.error(t('unknownError')))
   }, [t])
-
-  const monthlyPrice = settings?.monthlyPrice
-  const plans = [
-    { title: t('planMonthly'), total: monthlyPrice, duration: '1 mois' },
-    { title: t('planQuarterly'), total: monthlyPrice === undefined ? undefined : monthlyPrice * 3, duration: '3 mois', featured: true },
-    { title: t('planAnnual'), total: monthlyPrice === undefined ? undefined : monthlyPrice * 10, duration: '10 mois' },
-  ]
 
   return <div className="landing-page">
     <section className="hero">
@@ -91,18 +83,17 @@ export function LandingPage() {
       <div className="feature-grid">{platformFeatures.map(({ icon: Icon, title, text }) => <article className="feature-card" key={title}><span className="feature-icon"><Icon aria-hidden="true"/></span><h3>{title}</h3><p>{text}</p></article>)}</div>
     </section>
 
-    <section className="teacher-promo"><div><span className="section-kicker">Apprendre avec les enseignants</span><h2>Des contenus et des séances au fil de votre préparation</h2><p>Consultez les leçons publiées, révisez avec les annales et rejoignez les séances en direct disponibles.</p></div><Link href="/subjects" className="button-soft">{t('courses')} <ArrowRight aria-hidden="true"/></Link></section>
+    <section className="teacher-promo"><div><span className="section-kicker">Apprendre avec les enseignants</span><h2>Des classes organisées par filière</h2><p>Rejoignez un groupe, retrouvez ses cours, ses devoirs et ses séances.</p></div><Link href="/groups" className="button-soft">Trouver une classe <ArrowRight aria-hidden="true"/></Link></section>
 
-    <section className="landing-section pricing-section" id="pricing">
-      <div className="section-heading"><span className="section-kicker">Des formules adaptées à votre rythme</span><h2>Choisissez votre durée d’abonnement</h2><p>Les tarifs à jour sont définis par la plateforme et visibles avant votre demande.</p></div>
-      <div className="pricing-cards">{plans.map((plan) => <article className={`pricing-card${plan.featured ? ' pricing-card-featured' : ''}`} key={plan.title}>
-        {plan.featured && <span className="pricing-featured-label">Formule suggérée</span>}
-        <span className="pricing-duration">{plan.duration}</span><h3>{plan.title}</h3>
-        <p className="pricing-amount">{plan.total === undefined ? '—' : <>{plan.total} <small>TND</small></>}</p>
-        <p>Accès aux contenus réservés pendant la durée de la formule.</p>
-        <Link href="/pricing" className={plan.featured ? 'button-primary' : 'button-soft'}>{t('pricing')} <ArrowRight aria-hidden="true"/></Link>
-      </article>)}</div>
-    </section>
+    {settings?.paymentsEnabled ? <section className="landing-section pricing-section" id="pricing">
+      <div className="section-heading"><span className="section-kicker">Tarifs par classe</span><h2>Consultez les conditions du groupe choisi</h2>
+        <p>Chaque professeur définit le tarif mensuel de sa classe. Aucun abonnement global n’est proposé.</p></div>
+      <Link href="/groups" className="button-primary">Voir les classes et leurs tarifs <ArrowRight aria-hidden="true"/></Link>
+    </section> : <section className="landing-section pricing-section"><div className="section-heading">
+      <span className="section-kicker">Classes du Bac tunisien</span><h2>Trouvez le groupe qui vous correspond</h2>
+      <p>Les inscriptions sont gratuites pour le moment.</p></div>
+      <Link href="/groups" className="button-primary">Découvrir les classes <ArrowRight aria-hidden="true"/></Link>
+    </section>}
 
     <section className="landing-section faq-section"><div className="section-heading"><span className="section-kicker">Besoin d’aide ?</span><h2>Questions fréquentes</h2></div><div className="faq-list">{faqItems.map(({ question, answer }) => <details className="faq-item" key={question}><summary>{question}</summary><p>{answer}</p></details>)}</div></section>
 
