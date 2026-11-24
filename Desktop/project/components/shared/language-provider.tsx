@@ -2,7 +2,6 @@
 
 import { createContext, useContext, useEffect, useMemo } from 'react'
 import type { ReactNode } from 'react'
-import { toast } from 'sonner'
 import { dictionary, type Language } from '@/lib/i18n'
 import { saveLanguagePreference } from '@/lib/api'
 
@@ -12,7 +11,7 @@ const LanguageContext = createContext<LanguageContextValue | null>(null)
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
-    void saveLanguagePreference('fr').catch(() => toast.error(dictionary.fr.unknownError))
+    void saveLanguagePreference('fr')
   }, [])
   const value = useMemo<LanguageContextValue>(() => ({ lang: 'fr', t: (key) => dictionary.fr[key] }), [])
   return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>

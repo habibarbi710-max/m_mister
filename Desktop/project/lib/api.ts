@@ -140,9 +140,19 @@ export async function addMissingDemoUsers(seedUsers: User[]): Promise<void> {
   const missing = seedUsers.filter((user) => !existingIds.has(user.id))
   if (missing.length) await write('users', [...users, ...missing])
 }
-export async function saveLanguagePreference(language: LanguagePreference): Promise<void> { await write('lang', language) }
-export async function getThemePreference(): Promise<'light' | 'dark'> { return read('theme') }
-export async function saveThemePreference(theme: 'light' | 'dark'): Promise<void> { await write('theme', theme) }
+export async function saveLanguagePreference(language: LanguagePreference): Promise<void> {
+  if (typeof window !== 'undefined') window.localStorage.setItem('edubac:language', language)
+}
+export async function getThemePreference(): Promise<'light' | 'dark'> {
+  if (typeof window !== 'undefined') {
+    const theme = window.localStorage.getItem('edubac:theme')
+    if (theme === 'dark') return 'dark'
+  }
+  return 'light'
+}
+export async function saveThemePreference(theme: 'light' | 'dark'): Promise<void> {
+  if (typeof window !== 'undefined') window.localStorage.setItem('edubac:theme', theme)
+}
 
 async function notifyUser(
   userId: string,

@@ -1,11 +1,12 @@
 import type { DataKey, DataProvider, DataResult, DataValue } from '@/lib/data/provider'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
+import { localProvider } from '@/lib/data/local-provider'
 
 const publicKeys = new Set([
   'subjects', 'lessons', 'lessonDrafts', 'deletedLessons', 'exams', 'liveSessions',
   'liveQuestions', 'liveAttendance', 'sections', 'classGroups', 'groupContentLinks',
   'schedulePolls', 'schedulePollVotes', 'groupAnnouncements', 'groupMaterials',
-  'settings', 'lang', 'theme',
+  'settings',
 ])
 
 const teacherKeys = new Set([
@@ -63,6 +64,10 @@ export const supabaseProvider: DataProvider = {
 
       if (data) return { ok: true, data: data.value as DataValue<K> }
 
+      if (scope === 'public') {
+        return localProvider.read(key)
+      }
+
       if (key === 'theme') return { ok: true, data: 'light' as DataValue<K> }
       if (key === 'lang') return { ok: true, data: 'fr' as DataValue<K> }
       if (key === 'user') return { ok: true, data: null as DataValue<K> }
@@ -109,14 +114,34 @@ export const supabaseProvider: DataProvider = {
         return { ok: false, error: { code: 'persistence-failed', message: 'You must be logged in' } }
       }
 
-      const { error } = await supabase.from('app_state').upsert({
-        key,
-        owner_id: owner.owner_id,
-        scope,
-        value,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: owner.owner_id ? 'key,owner_id' : 'key' })
-      if (error) throw error
+      let existingQuery = supabase
+        .from('app_state')
+        .select('id')
+        .eq('key', key)
+      existingQuery = owner.owner_id
+        ? existingQuery.eq('owner_id', owner.owner_id)
+        : existingQuery.is('owner_id', null)
+      const { data: existing, error: existingError } = await existingQuery.maybeSingle()
+      if (existingError) throw existingError
+
+      if (existing) {
+        const { error } = await supabase
+          .from('app_state')
+          .update({ scope, value, updated_at: new Date().toISOString() })
+          .eq('id', existing.id)
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('app_state')
+          .insert({
+            key,
+            owner_id: owner.owner_id,
+            scope,
+            value,
+            updated_at: new Date().toISOString(),
+          })
+        if (error) throw error
+      }
       return { ok: true, data: undefined }
     } catch (error) {
       return { ok: false, error: { code: 'persistence-failed', message: error instanceof Error ? error.message : 'Unable to save data' } }
