@@ -6,6 +6,7 @@ import * as api from '@/lib/api'
 import { linkVideoStorage } from '@/lib/video/storage'
 import type { LessonVideo } from '@/types'
 import { useLanguage } from '@/components/shared/language-provider'
+import { translateApiError } from '@/components/shared/api-error'
 
 export function LessonVideoPlayer({ lessonId, video }: { lessonId: string; video: LessonVideo }) {
   const { t } = useLanguage()
@@ -31,7 +32,7 @@ export function LessonVideoPlayer({ lessonId, video }: { lessonId: string; video
 
   async function savePosition(seconds: number) {
     const result = await api.saveVideoPosition(lessonId, video.id, seconds)
-    if (!result.ok) toast.error(result.error)
+    if (!result.ok) toast.error(translateApiError(result.error, t))
   }
 
   function onTimeUpdate() {

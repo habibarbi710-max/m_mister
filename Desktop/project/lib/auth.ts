@@ -1,8 +1,11 @@
 import type { ApiResult, AuthCredential, Section, User } from '@/types'
 import { demoUsers } from '@/lib/mock-data'
 import { signIn, signOut, registerUser, getCurrentUser, createTeacherAccount, getAuthCredentials, saveAuthCredentials, addMissingDemoUsers } from './api'
+import { getSupabaseEnvironment } from '@/lib/supabase/env'
+import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 
 export type AuthAccount = AuthCredential
+type AuthResult<T> = ApiResult<T> | { ok: true; data: T; requiresConfirmation: true }
 
 const bytesToHex = (bytes: Uint8Array) => Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('')
 
@@ -30,8 +33,30 @@ async function ensureSeeds(): Promise<AuthAccount[]> {
   return accounts
 }
 
-export async function authLogin(identifier: string, password: string): Promise<ApiResult<User>> {
+function authErrorMessage(message: string): string {
+  const normalized = message.toLowerCase()
+  if (/already registered|already exists|email_exists|phone_exists|user_already_exists/.test(normalized)) return 'This email is already registered'
+  if (/email not confirmed|email_not_confirmed/.test(normalized)) return 'Email not confirmed'
+  if (/banned|blocked/.test(normalized)) return 'This account is blocked'
+  if (/invalid login|invalid credentials|invalid_credentials|user not found|password/.test(normalized)) return 'Email or password is incorrect'
+  return 'Authentication is temporarily unavailable'
+}
+
+export async function authLogin(identifier: string, password: string): Promise<AuthResult<User>> {
   if (!identifier || !password) return { ok: false, error: 'Email and password are required' }
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const normalized = identifier.trim()
+    const credentials = normalized.includes('@')
+      ? { email: normalized, password }
+      : { phone: normalized.replace(/\s/g, ''), password }
+    const { error } = await supabase.auth.signInWithPassword(credentials)
+    if (error) return { ok: false, error: authErrorMessage(`${error.code ?? ''} ${error.message}`) }
+    const user = await getCurrentUser()
+    if (!user) return { ok: false, error: 'Email or password is incorrect' }
+    return { ok: true, data: user }
+  }
+
   const accounts = await ensureSeeds()
   const normalized = identifier.trim().toLowerCase()
   const account = accounts.find((item) => item.user.email.toLowerCase() === normalized || item.user.phone.replace(/\s/g, '').toLowerCase() === normalized.replace(/\s/g, ''))
@@ -48,7 +73,41 @@ export async function authLogin(identifier: string, password: string): Promise<A
   }
 }
 
-export async function authRegister(input: { name: string; email: string; phone: string; password: string; section: Section; sectionId?: string }): Promise<ApiResult<User>> {
+export async function authRegister(input: { name: string; email: string; phone: string; password: string; section: Section; sectionId?: string }): Promise<AuthResult<User>> {
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const metadata = { full_name: input.name.trim(), sectionId: input.sectionId ?? '' }
+    const options = {
+      data: metadata,
+      emailRedirectTo: typeof window === 'undefined' ? undefined : `${window.location.origin}/login`,
+    }
+    const response = input.email
+      ? await supabase.auth.signUp({ email: input.email.trim().toLowerCase(), password: input.password, options })
+      : await supabase.auth.signUp({ phone: input.phone.trim(), password: input.password, options })
+    if (response.error) return { ok: false, error: authErrorMessage(`${response.error.code ?? ''} ${response.error.message}`) }
+    if (!response.data.user) return { ok: false, error: 'Authentication is temporarily unavailable' }
+
+    if (!response.data.session) {
+      return {
+        ok: true,
+        requiresConfirmation: true,
+        data: {
+          id: response.data.user.id,
+          name: input.name.trim(),
+          email: response.data.user.email ?? '',
+          phone: response.data.user.phone ?? input.phone.trim(),
+          section: input.section,
+          sectionId: input.sectionId,
+          role: 'student',
+        },
+      }
+    }
+
+    const user = await getCurrentUser()
+    if (!user) return { ok: false, error: 'Authentication is temporarily unavailable' }
+    return { ok: true, data: user }
+  }
+
   const accounts = await ensureSeeds()
   if (accounts.some((item) => (input.email && item.user.email.toLowerCase() === input.email.trim().toLowerCase())
     || (input.phone && item.user.phone.replace(/\s/g, '') === input.phone.replace(/\s/g, '')))) {
@@ -62,6 +121,9 @@ export async function authRegister(input: { name: string; email: string; phone: 
 }
 
 export async function authCreateTeacher(input: { name: string; email: string; phone: string; password: string; section: Section }): Promise<ApiResult<User>> {
+  if (getSupabaseEnvironment()) {
+    return { ok: false, error: 'La création sécurisée de comptes enseignants doit être activée côté serveur.' }
+  }
   const response = await createTeacherAccount({ name: input.name, email: input.email, phone: input.phone, section: input.section })
   if (!response.ok) return response
   const account: AuthAccount = { user: response.data, passwordHash: await hashPassword(input.password) }
@@ -75,6 +137,21 @@ export async function authSession(): Promise<User | null> { return getCurrentUse
 export async function authChangePassword(currentPassword: string, nextPassword: string): Promise<ApiResult<User>> {
   const user = await getCurrentUser()
   if (!user) return { ok: false, error: 'You must be logged in' }
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const credentials = user.email
+      ? { email: user.email, password: currentPassword }
+      : { phone: user.phone.replace(/\s/g, ''), password: currentPassword }
+    const verification = await supabase.auth.signInWithPassword(credentials)
+    if (verification.error) return { ok: false, error: 'Current password is incorrect' }
+    const update = await supabase.auth.updateUser({ password: nextPassword })
+    if (update.error) return { ok: false, error: 'Unable to update the password' }
+    const updatedUser = await getCurrentUser()
+    return updatedUser
+      ? { ok: true, data: updatedUser }
+      : { ok: false, error: 'Unable to verify the updated session' }
+  }
+
   const accounts = await ensureSeeds()
   const account = accounts.find((item) => item.user.id === user.id)
   if (!account) return { ok: false, error: 'Account not found' }

@@ -1,43 +1,28 @@
-import type { dictionary } from '@/lib/i18n'
+import { dictionary } from '@/lib/i18n'
+import { API_ERROR_CODES, getApiErrorCode, type ApiErrorCode } from '@/lib/api'
+import { toast } from 'sonner'
 
 type TranslationKey = keyof typeof dictionary.fr
 type Translate = (key: TranslationKey) => string
 
-const errorKeys: Record<string, TranslationKey> = {
-  'Unsupported receipt format': 'receiptError',
-  'Receipt must be a valid encoded image or PDF': 'receiptError',
-  'Receipt exceeds the 3 MB limit': 'receiptError',
-  'You must be logged in': 'loginRequired',
-  'This account is blocked': 'accountBlocked',
-  'Selected plan price is invalid': 'priceError',
-  'Admin permission required': 'permissionError',
-  'Teacher permission required': 'permissionError',
-  'A rejection reason of at least five characters is required': 'reasonError',
-  'You can only edit your own sessions': 'ownershipError',
-  'You can only edit your own lessons': 'ownershipError',
-  'You can only publish lessons under your own account': 'ownershipError',
-  'You can only delete your own lessons': 'ownershipError',
-  'You can only reorder your own lessons': 'ownershipError',
-  'You can only edit your own exam entries': 'ownershipError',
-  'You can only delete your own exam entries': 'ownershipError',
-  'Video URL must be a valid YouTube, Vimeo or Bunny URL': 'videoError',
-  'PDF must be uploaded as a validated PDF file': 'pdfError',
-  'Assign this lesson to an existing subject and chapter': 'chapterError',
-  'This subject is not assigned to your account': 'subjectError',
-  'Monthly price must be greater than zero': 'invalidSetting',
-  'Monthly price and payment instructions are invalid': 'invalidSetting',
-  'Invalid teacher details': 'invalidFields',
-  'Invalid live session details': 'sessionError',
-  'Pending payment not found': 'paymentStateError',
-  'Student permission required': 'permissionError',
-  'Invalid exam details': 'invalidFields',
-  'Invalid lesson details': 'invalidFields',
-  'This email is already registered': 'duplicateEmail',
-  'This email or phone is already registered': 'duplicateEmail',
-  'Teacher not found': 'unknownError',
-  'Unknown subject': 'subjectError',
+const errorKeys: Record<ApiErrorCode, TranslationKey> = {
+  [API_ERROR_CODES.AUTH_REQUIRED]: 'loginRequired',
+  [API_ERROR_CODES.PERMISSION_DENIED]: 'permissionError',
+  [API_ERROR_CODES.NOT_FOUND]: 'notFound',
+  [API_ERROR_CODES.INVALID_INPUT]: 'invalidFields',
+  [API_ERROR_CODES.PAYMENT_REQUIRED]: 'paymentStateError',
+  [API_ERROR_CODES.PAYMENTS_DISABLED]: 'paymentsDisabled',
+  [API_ERROR_CODES.RATE_LIMITED]: 'rateLimitError',
+  [API_ERROR_CODES.DUPLICATE]: 'duplicateEmail',
+  [API_ERROR_CODES.INVALID_STATE]: 'sessionError',
+  [API_ERROR_CODES.STORAGE_FAILURE]: 'unknownError',
+  [API_ERROR_CODES.UNKNOWN]: 'unknownError',
 }
 
 export function translateApiError(message: string, t: Translate): string {
-  return t(errorKeys[message] ?? 'unknownError')
+  return t(errorKeys[getApiErrorCode(message)])
+}
+
+export function showApiError(message: string): void {
+  toast.error(dictionary.fr[errorKeys[getApiErrorCode(message)]])
 }

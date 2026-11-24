@@ -102,7 +102,8 @@ export type ContentTrashItem =
   | { id: string; kind: 'module'; deletedAt: string; subjectId: string; module: Module }
   | { id: string; kind: 'lesson'; deletedAt: string; subjectId: string; moduleId: string; lesson: Lesson }
 export type LiveSessionStatus = 'scheduled' | 'live' | 'ended' | 'cancelled'
-export type LiveResource = { title: string; url: string }
+export type FileAttachment = { storageId: string; name: string; mimeType: string; size: number }
+export type LiveResource = { title: string; url?: string; attachment?: FileAttachment }
 export type LiveSession = {
   id: string
   title: string
@@ -112,8 +113,7 @@ export type LiveSession = {
   date: string
   startTime: string
   durationMinutes: number
-  provider: 'livekit' | 'external'
-  externalUrl?: string
+  provider: 'livekit'
   status: LiveSessionStatus
   replayUrl?: string
   changeReason?: string
@@ -270,6 +270,14 @@ export type GroupAnnouncement = {
   pinned: boolean
   createdAt: string
   hidden?: boolean
+}
+export type GroupMaterial = {
+  id: string
+  groupId: string
+  teacherId: string
+  title: string
+  attachment: FileAttachment
+  createdAt: string
 }
 export type LessonRating = {
   id: string

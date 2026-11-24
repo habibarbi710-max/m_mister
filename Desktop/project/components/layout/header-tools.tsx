@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import * as api from '@/lib/api'
 import { useAuth } from '@/components/shared/auth-provider'
 import { useLanguage } from '@/components/shared/language-provider'
+import { translateApiError } from '@/components/shared/api-error'
 import type { Lesson } from '@/types'
 import type { Notification } from '@/lib/data/provider'
 
@@ -134,6 +135,9 @@ export function NotificationBell() {
   const { t } = useLanguage()
   const { user } = useAuth()
   const [notifications, setNotifications] = useState<Notification[]>([])
+  const [open, setOpen] = useState(false)
+  const menuRef = useRef<HTMLDetailsElement>(null)
+  const summaryRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     let active = true
@@ -152,11 +156,30 @@ export function NotificationBell() {
   }, [t, user])
 
   const unread = notifications.filter((notification) => !notification.readAt).length
+
+  useEffect(() => {
+    if (!open) return
+    function closeOnOutsideClick(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      setOpen(false)
+      summaryRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
   async function markRead(notification: Notification) {
     if (notification.readAt) return
     const result = await api.markNotificationRead(notification.id)
     if (!result.ok) {
-      toast.error(result.error)
+      toast.error(translateApiError(result.error, t))
       return
     }
     setNotifications((current) => current.map((item) => item.id === notification.id ? result.data : item))
@@ -165,18 +188,27 @@ export function NotificationBell() {
   async function markAllRead() {
     const result = await api.markAllNotificationsRead()
     if (!result.ok) {
-      toast.error(result.error)
+      toast.error(translateApiError(result.error, t))
       return
     }
     const readAt = new Date().toISOString()
     setNotifications((current) => current.map((item) => item.readAt ? item : { ...item, readAt }))
   }
 
-  return <details className="notification-menu">
-    <summary className="header-tool-button" aria-label={`${t('notifications')}${unread ? `, ${unread} ${t('unread')}` : ''}`}>
+  return <details className="notification-menu" ref={menuRef} open={open}>
+    <summary
+      ref={summaryRef}
+      className="header-tool-button"
+      aria-label={`${t('notifications')}${unread ? `, ${unread} ${t('unread')}` : ''}`}
+      aria-expanded={open}
+      onClick={(event) => {
+        event.preventDefault()
+        setOpen((current) => !current)
+      }}
+    >
       <Bell aria-hidden="true"/>{unread > 0 && <span className="notification-count" aria-label={`${unread} ${t('unread')}`}>{unread > 9 ? '9+' : unread}</span>}
     </summary>
-    <section className="notification-popover" aria-label={t('notifications')}>
+    <section className="notification-popover" aria-label={t('notifications')} aria-hidden={!open}>
       <div className="notification-popover-heading"><h2>{t('notifications')}</h2>{unread > 0 && <button type="button" onClick={() => void markAllRead()}>Tout lire</button>}</div>
       {notifications.length === 0 ? <p>{t('noNotifications')}</p> : <ul>{notifications.slice(0, 20).map((notification) => <li key={notification.id} className={notification.readAt ? '' : 'is-unread'}>
         <Link href={notification.href} onClick={() => void markRead(notification)}>

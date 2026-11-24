@@ -16,6 +16,7 @@ import { Camera, CameraOff, Hand, Mic, MicOff, Radio, ScreenShare, ScreenShareOf
 import { toast } from 'sonner'
 import * as api from '@/lib/api'
 import { useLanguage } from '@/components/shared/language-provider'
+import { translateApiError } from '@/components/shared/api-error'
 import type { LiveSession, User } from '@/types'
 
 type TokenResponse = { token: string; serverUrl: string; roomName: string }
@@ -48,7 +49,9 @@ export function LiveRoomClient({ session, user, active }: { session: LiveSession
         })
         const payload = await response.json() as TokenResponse | { error?: string }
         if (!response.ok || !('token' in payload)) {
-          throw new Error('error' in payload && payload.error ? payload.error : 'Impossible de rejoindre la salle.')
+          throw new Error('error' in payload && payload.error
+            ? translateApiError(payload.error, t)
+            : 'Impossible de rejoindre la salle.')
         }
         if (mounted) setToken(payload)
       } catch (requestError) {
@@ -59,13 +62,13 @@ export function LiveRoomClient({ session, user, active }: { session: LiveSession
     }
     void fetchToken()
     return () => { mounted = false }
-  }, [caller, session])
+  }, [caller, session, t])
 
   const onConnected = useCallback(() => {
     if (user.role === 'student' && session.status === 'live' && !connectedAttendance.current) {
       connectedAttendance.current = true
       void api.recordLiveAttendance(session.id).then((result) => {
-        if (!result.ok) toast.error(result.error)
+        if (!result.ok) toast.error(translateApiError(result.error, t))
       }).catch(() => toast.error(t('unknownError')))
     }
   }, [session.id, session.status, t, user.role])
@@ -210,7 +213,7 @@ function RoomMedia({
       if (!response.ok) throw new Error(payload.error || 'Impossible de modifier la permission.')
       if (grant) setRaisedHands((current) => current.filter((hand) => hand.identity !== identity))
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Impossible de modifier la permission.')
+      toast.error(translateApiError(error instanceof Error ? error.message : 'Impossible de modifier la permission.', t))
     } finally {
       setGranting('')
     }

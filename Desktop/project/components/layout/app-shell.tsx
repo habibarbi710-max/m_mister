@@ -18,6 +18,7 @@ import { TeacherContentStudio } from '@/components/teacher/content-studio'
 import { AdminDashboard } from '@/components/admin/admin-dashboard'
 import { LandingPage } from '@/components/layout/landing-page'
 import { RouteLoading } from '@/components/shared/route-loading'
+import { matchesRoute } from '@/lib/route-matching'
 import { LiveRoomPage } from '@/components/student/live-room-page'
 import { DarkModeToggle, GlobalLessonSearch, NotificationBell } from '@/components/layout/header-tools'
 import {
@@ -58,20 +59,22 @@ function ShellContent() {
       .catch(() => toast.error('Impossible de charger les paramètres de la plateforme.'))
   }, [])
   const liveRoom = pathname.startsWith('/live/')
-  const protectedRole = useMemo(() => pathname.startsWith('/teacher') || pathname.startsWith('/admin') || pathname === '/dashboard' || pathname === '/profile' || pathname.startsWith('/student/') || pathname === '/messages' || pathname === '/notifications' || liveRoom, [liveRoom, pathname])
+  const teacherRoute = matchesRoute(pathname, '/teacher')
+  const adminRoute = matchesRoute(pathname, '/admin')
+  const protectedRole = useMemo(() => teacherRoute || adminRoute || pathname === '/dashboard' || pathname === '/profile' || pathname.startsWith('/student/') || pathname === '/messages' || pathname === '/notifications' || liveRoom, [adminRoute, liveRoom, pathname, teacherRoute])
   const studentArea = user?.role === 'student' && (pathname === '/dashboard' || pathname === '/subjects' || pathname.startsWith('/subjects/') || pathname.startsWith('/lessons/') || pathname === '/exams' || pathname === '/live' || liveRoom || pathname === '/profile' || pathname.startsWith('/student/') || pathname === '/groups' || pathname.startsWith('/groups/') || pathname === '/messages' || pathname === '/notifications')
-  const teacherArea = user?.role === 'teacher' && (pathname.startsWith('/teacher') || liveRoom || pathname === '/messages' || pathname === '/notifications')
-  const adminArea = user?.role === 'admin' && (pathname.startsWith('/admin') || pathname === '/notifications' || liveRoom)
+  const teacherArea = user?.role === 'teacher' && (teacherRoute || liveRoom || pathname === '/messages' || pathname === '/notifications')
+  const adminArea = user?.role === 'admin' && (adminRoute || pathname === '/notifications' || liveRoom)
   const workspace = Boolean(studentArea || teacherArea || adminArea)
   useEffect(() => {
     if (loading || !protectedRole) return
     if (!user) router.replace(`/login?return=${encodeURIComponent(pathname)}`)
-    else if (pathname.startsWith('/admin') && user.role !== 'admin') router.replace(user.role === 'teacher' ? '/teacher' : '/dashboard')
+    else if (adminRoute && user.role !== 'admin') router.replace(user.role === 'teacher' ? '/teacher' : '/dashboard')
     else if (liveRoom && user.role === 'admin') router.replace('/admin')
-    else if (pathname.startsWith('/teacher') && user.role !== 'teacher' && user.role !== 'admin') router.replace('/dashboard')
+    else if (teacherRoute && user.role !== 'teacher' && user.role !== 'admin') router.replace('/dashboard')
     else if (pathname.startsWith('/student/') && user.role !== 'student') router.replace(user.role === 'admin' ? '/admin' : '/teacher')
     else if ((pathname === '/dashboard' || pathname === '/profile') && user.role !== 'student') router.replace(user.role === 'admin' ? '/admin' : '/teacher')
-  }, [liveRoom, loading, pathname, protectedRole, router, user])
+  }, [adminRoute, liveRoom, loading, pathname, protectedRole, router, teacherRoute, user])
   return <div dir="ltr" lang="fr" className={`site-shell min-h-screen bg-background text-foreground${workspace ? ' site-shell--workspace' : ''}${studentArea ? ' site-shell--student' : ''}${teacherArea ? ' site-shell--teacher' : ''}`}>
     <Toaster richColors position="top-center"/>
     <header className="site-header"><div className="header-inner">
@@ -244,7 +247,7 @@ function RouteContent({ pathname }: { pathname: string }) {
   if (pathname === '/live') return <LiveSessions/>
   if (pathname === '/profile' && user) return <StudentProfile/>
   if (pathname === '/teacher/content' && (user?.role === 'teacher' || user?.role === 'admin')) return <TeacherContentStudio/>
-  if (pathname.startsWith('/teacher') && (user?.role === 'teacher' || user?.role === 'admin')) return <TeacherDashboard/>
-  if (pathname.startsWith('/admin') && user?.role === 'admin') return <AdminDashboard/>
+  if (matchesRoute(pathname, '/teacher') && (user?.role === 'teacher' || user?.role === 'admin')) return <TeacherDashboard/>
+  if (matchesRoute(pathname, '/admin') && user?.role === 'admin') return <AdminDashboard/>
   return <section className="empty-page"><h1>{t(user ? 'noPermission' : 'loginRequired')}</h1><Link href={user ? '/' : '/login'}>{user ? t('returnHome') : t('login')}</Link></section>
 }

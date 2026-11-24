@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import * as api from '@/lib/api'
+import { showApiError } from '@/components/shared/api-error'
 import { useAuth } from '@/components/shared/auth-provider'
 import type {
   HomeworkFile,
@@ -96,13 +97,13 @@ export function TeacherPublicProfile({ teacherId }: { teacherId: string }) {
     .filter((lesson) => lesson.teacherId === teacherId && lesson.status === 'published')
   async function toggleFollow() {
     const result = following ? await api.unfollowTeacher(teacherId) : await api.followTeacher(teacherId)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setFollowing(!following)
   }
   async function sendMessage(event: React.FormEvent) {
     event.preventDefault()
     const result = await api.sendTeacherMessage(teacherId, message)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setMessage('')
     toast.success('Message envoyé dans EduBac.')
   }
@@ -110,7 +111,7 @@ export function TeacherPublicProfile({ teacherId }: { teacherId: string }) {
     event.preventDefault()
     if (!lessonId) return toast.error('Choisissez une leçon terminée.')
     const result = await api.rateLesson(lessonId, stars, comment)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setComment('')
     toast.success('Votre avis a été enregistré.')
     void refresh()
@@ -157,7 +158,7 @@ function TeacherProfileEditor({ profile, saved }: { profile: TeacherProfile; sav
       bio, photoUrl, specialties: specialties.split(',').map((item) => item.trim()).filter(Boolean),
       subjectIds: profile.subjectIds,
     })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await saved()
     toast.success('Profil enregistré.')
   }
@@ -200,7 +201,7 @@ export function LessonQuestions({ lessonId }: { lessonId: string }) {
     event.preventDefault()
     const seconds = position.trim() ? Number(position) : undefined
     const result = await api.askLessonQuestion(lessonId, questionText, seconds)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setQuestionText('')
     setPosition('')
     await refresh()
@@ -208,13 +209,13 @@ export function LessonQuestions({ lessonId }: { lessonId: string }) {
   async function reply(event: React.FormEvent, questionId: string) {
     event.preventDefault()
     const result = await api.answerLessonQuestion(questionId, replies[questionId] ?? '')
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setReplies((current) => ({ ...current, [questionId]: '' }))
     await refresh()
   }
   async function report(type: 'question' | 'answer', id: string) {
     const result = await api.createReport(type, id, 'Contenu à vérifier')
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     toast.success('Signalement transmis à la modération.')
   }
   return <section className="admin-table-card relationship-questions" aria-labelledby={`questions-${lessonId}`}>
@@ -230,14 +231,14 @@ export function LessonQuestions({ lessonId }: { lessonId: string }) {
           <p>{question.text}</p>
           {question.videoPositionSeconds !== undefined && <a href={`#video-${Math.floor(question.videoPositionSeconds)}`}>À {Math.floor(question.videoPositionSeconds / 60)}:{String(question.videoPositionSeconds % 60).padStart(2, '0')}</a>}
           <div className="relationship-actions">
-            <button type="button" className="button-soft" onClick={async () => { const result = await api.upvoteLessonQuestion(question.id); if (!result.ok) toast.error(result.error); else await refresh() }}>Utile · {question.voterIds.length}</button>
+            <button type="button" className="button-soft" onClick={async () => { const result = await api.upvoteLessonQuestion(question.id); if (!result.ok) showApiError(result.error); else await refresh() }}>Utile · {question.voterIds.length}</button>
             <button type="button" className="button-soft" onClick={() => void report('question', question.id)}>Signaler</button>
-            {user?.role === 'teacher' && <button type="button" className="button-soft" onClick={async () => { const result = await api.markLessonQuestionAnswered(question.id); if (!result.ok) toast.error(result.error); else await refresh() }}>Marquer « Répondue »</button>}
+            {user?.role === 'teacher' && <button type="button" className="button-soft" onClick={async () => { const result = await api.markLessonQuestionAnswered(question.id); if (!result.ok) showApiError(result.error); else await refresh() }}>Marquer « Répondue »</button>}
           </div>
           {question.answers.filter((answer) => !answer.hidden).map((answer) => <div className={`relationship-answer${answer.teacherAnswer ? ' relationship-answer--teacher' : ''}`} key={answer.id}>
             {answer.teacherAnswer && <strong>Réponse du professeur</strong>}<p>{answer.text}</p>
             <div className="relationship-actions"><button type="button" className="button-soft" onClick={() => void report('answer', answer.id)}>Signaler</button>
-              {user?.role === 'teacher' && <button type="button" className="button-soft" onClick={async () => { const result = await api.pinLessonQuestionAnswer(question.id, answer.id); if (!result.ok) toast.error(result.error); else await refresh() }}>{question.pinnedAnswerId === answer.id ? 'Réponse épinglée' : 'Épingler la meilleure réponse'}</button>}
+              {user?.role === 'teacher' && <button type="button" className="button-soft" onClick={async () => { const result = await api.pinLessonQuestionAnswer(question.id, answer.id); if (!result.ok) showApiError(result.error); else await refresh() }}>{question.pinnedAnswerId === answer.id ? 'Réponse épinglée' : 'Épingler la meilleure réponse'}</button>}
             </div>
           </div>)}
           {user && user.role !== 'admin' && <form className="relationship-reply" onSubmit={(event) => void reply(event, question.id)}>
@@ -309,7 +310,7 @@ export function TeacherQuestionsInbox() {
   async function reply(event: React.FormEvent, questionId: string) {
     event.preventDefault()
     const result = await api.answerLessonQuestion(questionId, replies[questionId] ?? '')
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setReplies((current) => ({ ...current, [questionId]: '' }))
     await refresh()
     toast.success('Réponse envoyée à l’élève.')
@@ -323,7 +324,7 @@ export function TeacherQuestionsInbox() {
         <label className="form-field">Réponse rapide<textarea value={replies[question.id] ?? ''} onChange={(event) => setReplies((current) => ({ ...current, [question.id]: event.target.value }))} required maxLength={3000}/></label>
         <button className="button-primary" type="submit">Répondre</button>
       </form>
-      <button className="button-soft" type="button" onClick={async () => { const result = await api.markLessonQuestionAnswered(question.id); if (!result.ok) toast.error(result.error); else await refresh() }}>Marquer « Répondue »</button>
+      <button className="button-soft" type="button" onClick={async () => { const result = await api.markLessonQuestionAnswered(question.id); if (!result.ok) showApiError(result.error); else await refresh() }}>Marquer « Répondue »</button>
     </article>)}
   </section>
 }
@@ -347,7 +348,7 @@ export function TeacherAnnouncementsPage() {
     const result = await api.publishTeacherAnnouncement({
       title, body, audience: audience === 'followers' ? { type: 'followers' } : { type: 'subject', subjectId }, pinned,
     })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setTitle('')
     setBody('')
     await refresh()
@@ -404,7 +405,7 @@ export function HomeworkPage() {
       lessonId, title, instructions, dueAt: new Date(dueAt).toISOString(), maxPoints: 20,
       allowedTypes: [allowedType],
     })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setTitle('')
     setInstructions('')
     setDueAt('')
@@ -417,7 +418,7 @@ export function HomeworkPage() {
       ...(answers[assignmentId] ? { text: answers[assignmentId] } : {}),
       ...(files[assignmentId] ? { file: files[assignmentId] } : {}),
     })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
     toast.success(result.data.late ? 'Copie rendue après la date limite.' : 'Copie envoyée.')
   }
@@ -435,7 +436,7 @@ export function HomeworkPage() {
     event.preventDefault()
     const result = await api.gradeHomework(submissionId, Number(grades[submissionId]), feedback[submissionId] ?? '')
     if (!result.ok) {
-      toast.error(result.error)
+      showApiError(result.error)
       return
     }
     await refresh()
@@ -538,14 +539,14 @@ export function MessagesPage() {
   async function send(event: React.FormEvent) {
     event.preventDefault()
     const result = await api.replyToTeacherConversation(selectedId, text)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setText('')
     await refresh()
     setMessages(await api.getConversationMessages(selectedId))
   }
   async function report(message: PrivateMessage) {
     const result = await api.createReport('message', message.id, 'Message à vérifier')
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     toast.success('Signalement transmis à la modération.')
   }
   const selected = conversations.find((item) => item.id === selectedId)
@@ -563,7 +564,7 @@ export function MessagesPage() {
         {selected ? <><div className="relationship-section-heading"><h2>{selected.participantName}</h2>
           {user?.role === 'student' && <button className="button-soft" type="button" onClick={async () => {
             const result = await api.blockTeacherMessaging(selected.participantId, !blocked)
-            if (!result.ok) return toast.error(result.error)
+            if (!result.ok) return showApiError(result.error)
             setBlocked(!blocked)
           }}>{blocked ? 'Autoriser les messages' : 'Bloquer les messages'}</button>}</div>
           <div className="relationship-message-list">{messages.map((message) => <article className={message.senderId === user?.id ? 'relationship-message mine' : 'relationship-message'} key={message.id}>
@@ -588,12 +589,12 @@ export function NotificationsPage() {
   useEffect(() => { void refresh().catch(() => { setLoading(false); toast.error('Impossible de charger les notifications.') }) }, [refresh])
   async function markAll() {
     const result = await api.markAllNotificationsRead()
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
   }
   async function markRead(id: string) {
     const result = await api.markNotificationRead(id)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setNotifications((rows) => rows.map((item) => item.id === id ? result.data : item))
   }
   return <section className="app-page">
@@ -631,7 +632,7 @@ export function AdminRelationshipsPage() {
   useEffect(() => { void refresh().catch(() => { setLoading(false); toast.error('Impossible de charger la modération.') }) }, [refresh])
   async function moderate(reportId: string, action: 'hide' | 'delete' | 'warn' | 'block-messaging' | 'suspend') {
     const result = await api.moderateReport(reportId, action)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
     toast.success('Action de modération enregistrée.')
   }
@@ -640,13 +641,13 @@ export function AdminRelationshipsPage() {
     const result = await api.saveRelationshipSettings({
       ...settings, bannedWords: bannedWords.split(',').map((word) => word.trim()).filter(Boolean),
     })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setSettings(result.data)
     toast.success('Paramètres enregistrés.')
   }
   async function updatePercentage(teacherId: string, value: string) {
     const result = await api.setTeacherRevenueShare(teacherId, Number(value))
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
   }
   return <section className="app-page">

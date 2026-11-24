@@ -8,7 +8,7 @@ import { BookOpenCheck, GraduationCap, ShieldCheck } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import type { BacSection, Section, User } from '@/types'
+import type { BacSection, Section } from '@/types'
 import { authLogin, authRegister } from '@/lib/auth'
 import * as api from '@/lib/api'
 import { useAuth } from './auth-provider'
@@ -72,9 +72,15 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
       if (!result.ok) {
         const message = result.error === 'Email or password is incorrect' ? t('loginError')
           : result.error === 'This email is already registered' || result.error === 'This email or phone is already registered' ? t('emailExists')
-            : result.error === 'This account is blocked' ? t('accountBlocked') : t('unknownError')
+            : result.error === 'This account is blocked' ? t('accountBlocked')
+              : result.error === 'Email not confirmed' ? t('accountConfirmation') : t('unknownError')
         setServerError(message)
         toast.error(message)
+        return
+      }
+      if ('requiresConfirmation' in result && result.requiresConfirmation) {
+        setServerError(t('accountConfirmation'))
+        toast.info(t('accountConfirmation'))
         return
       }
       setUser(result.data)
@@ -98,7 +104,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
         <Field label={t('password')} error={errors.password?.message}><input {...register('password')} type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} /></Field>
         {mode === 'register' && <Field label={t('section')} error={errors.section?.message}><select {...register('section')}>{sections.map((section) => <option key={section.id} value={section.name}>{section.name}</option>)}</select></Field>}
         {serverError && <p role="alert">{serverError}</p>}
-        <button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : t('submit')}</button>
+        <button className="button-primary" disabled={isSubmitting}>{isSubmitting ? t('loading') : mode === 'login' ? t('signInButton') : t('createAccountButton')}</button>
         <p><Link href={mode === 'login' ? '/register' : '/login'}>{mode === 'login' ? t('register') : t('login')}</Link></p>
       </form>
       </div>

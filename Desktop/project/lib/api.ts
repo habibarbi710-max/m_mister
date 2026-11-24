@@ -1,4 +1,4 @@
-import type { ApiResult, AuthCredential, AvailabilityVote, BacSection, ClassGroup, ClassLogEntry, ContentTrashItem, Exam, ExamInput, GroupAnnouncement, GroupAssessment, GroupAttendance, GroupContentLink, GroupEnrollment, GroupPayment, GroupRescheduleRequest, HomeworkAssignment, HomeworkFile, HomeworkSubmission, Lesson, LessonAnswer, LessonDraft, LessonInput, LessonQuestion, LessonRating, LessonVideoPosition, LiveAttendance, LiveQuestion, LiveSession, LiveSessionChanges, LiveSessionInput, MessagingBlock, ModerationAction, ModuleInput, Payment, PlatformSettings, PrivateMessage, QuizResult, RelationshipSettings, Report, ReorderLessonInput, ReorderModuleInput, ReorderSubjectInput, SchedulePoll, SchedulePollVote, Section, Subject, SubjectInput, StudentActivity, StudentGrade, StudentSubjectEnrollment, Subscription, SubscriptionScope, TeacherAnnouncement, TeacherAssignment, TeacherEngagement, TeacherFollow, TeacherProfile, User, WeeklySlot } from '@/types'
+import type { ApiResult, AuthCredential, AvailabilityVote, BacSection, ClassGroup, ClassLogEntry, ContentTrashItem, Exam, ExamInput, FileAttachment, GroupAnnouncement, GroupAssessment, GroupAttendance, GroupContentLink, GroupEnrollment, GroupMaterial, GroupPayment, GroupRescheduleRequest, HomeworkAssignment, HomeworkFile, HomeworkSubmission, Lesson, LessonAnswer, LessonDraft, LessonInput, LessonQuestion, LessonRating, LessonVideoPosition, LiveAttendance, LiveQuestion, LiveResource, LiveSession, LiveSessionChanges, LiveSessionInput, ModerationAction, ModuleInput, Payment, PlatformSettings, PrivateMessage, QuizResult, RelationshipSettings, Report, ReorderLessonInput, ReorderModuleInput, ReorderSubjectInput, SchedulePoll, SchedulePollVote, Section, Subject, SubjectInput, StudentActivity, StudentGrade, StudentSubjectEnrollment, Subscription, SubscriptionScope, TeacherAnnouncement, TeacherAssignment, TeacherEngagement, TeacherFollow, TeacherProfile, User, WeeklySlot } from '@/types'
 import { liveAttendanceSchema, liveQuestionSchema, liveSessionInputSchema, liveSessionSchema } from '@/lib/live-schemas'
 import { liveSessionStart } from '@/lib/live-time'
 import { dataProvider } from '@/lib/data/config'
@@ -7,6 +7,8 @@ import { calculateQuizScore } from '@/lib/quiz-score'
 import { parseVideoUrl } from '@/lib/video/parse'
 import { calculateGroupAverage, getGradeDistribution } from '@/lib/grades'
 import { generateWeeklySessionDates, hasSessionConflict, privateStudentName, rankWeeklySlots, suggestBestWeeklySlot } from '@/lib/group-scheduling'
+import { getSupabaseEnvironment } from '@/lib/supabase/env'
+import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 
 async function read<K extends DataKey>(key: K): Promise<DataValue<K>> {
   const result = await dataProvider.read(key)
@@ -20,6 +22,103 @@ async function write<K extends DataKey>(key: K, value: DataValue<K>): Promise<vo
 }
 
 export const MAX_STUDENT_MESSAGES_PER_HOUR = 10
+export const MAX_EDUCATIONAL_FILE_SIZE = 10 * 1024 * 1024
+export const EDUCATIONAL_FILE_ACCEPT = '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.rtf,.odt,.ods,.odp,.md,.tex,.jpg,.jpeg,.png,.webp,.gif,.mp3,.wav,.m4a,.mp4,.webm,.mov,.zip'
+export const API_ERROR_CODES = {
+  AUTH_REQUIRED: 'AUTH_REQUIRED',
+  PERMISSION_DENIED: 'PERMISSION_DENIED',
+  NOT_FOUND: 'NOT_FOUND',
+  INVALID_INPUT: 'INVALID_INPUT',
+  PAYMENT_REQUIRED: 'PAYMENT_REQUIRED',
+  PAYMENTS_DISABLED: 'PAYMENTS_DISABLED',
+  RATE_LIMITED: 'RATE_LIMITED',
+  DUPLICATE: 'DUPLICATE',
+  INVALID_STATE: 'INVALID_STATE',
+  STORAGE_FAILURE: 'STORAGE_FAILURE',
+  UNKNOWN: 'UNKNOWN',
+} as const
+export type ApiErrorCode = typeof API_ERROR_CODES[keyof typeof API_ERROR_CODES]
+
+export function getApiErrorCode(error: string): ApiErrorCode {
+  const knownCode = Object.values(API_ERROR_CODES).find((code) => code === error)
+  if (knownCode) return knownCode
+
+  const message = error.toLowerCase()
+  if (/logged in|log in|authentication|connexion|connecté/.test(message)) return API_ERROR_CODES.AUTH_REQUIRED
+  if (/paiements sont désactivés|payments are disabled/.test(message)) return API_ERROR_CODES.PAYMENTS_DISABLED
+  if (/limite.*heure|rate limit/.test(message)) return API_ERROR_CODES.RATE_LIMITED
+  if (/already registered|already used|déjà utilisé|duplicate/.test(message)) return API_ERROR_CODES.DUPLICATE
+  if (/not found|introuvable|unknown subject/.test(message)) return API_ERROR_CODES.NOT_FOUND
+  if (/permission|required|reserved|réservé|own|belongs|belong|ownership|inaccessible|access|inscription acceptée|blocked|bloqué/.test(message)) return API_ERROR_CODES.PERMISSION_DENIED
+  if (/payment|paiement|receipt|reçu|subscription|abonnement|paid period/.test(message)) return API_ERROR_CODES.PAYMENT_REQUIRED
+  if (/invalid|must be|must contain|at least|maximum|too large|too long|format|invalide|doit |au moins|maximum|supérieur/.test(message)) return API_ERROR_CODES.INVALID_INPUT
+  if (/not started|no longer|state|status|cannot|impossible|déjà|terminé|annulé|fixé/.test(message)) return API_ERROR_CODES.INVALID_STATE
+  if (/storage|stockage|file|fichier/.test(message)) return API_ERROR_CODES.STORAGE_FAILURE
+  return API_ERROR_CODES.UNKNOWN
+}
+const allowedEducationalExtensions = new Set(EDUCATIONAL_FILE_ACCEPT.split(',').map((extension) => extension.slice(1)))
+const blockedEducationalMimeTypes = new Set([
+  'application/x-msdownload', 'application/x-executable', 'application/x-sh',
+  'text/html', 'application/javascript', 'text/javascript', 'image/svg+xml',
+])
+
+function educationalFileError(file: File): string | undefined {
+  if (file.size <= 0) return 'Le fichier est vide.'
+  if (file.size > MAX_EDUCATIONAL_FILE_SIZE) return 'Chaque fichier doit faire 10 Mo maximum.'
+  const fileName = file.name.replace(/[\\/\u0000-\u001f\u007f]/g, '_').trim()
+  const extension = fileName.toLowerCase().split('.').pop()
+  if (!extension || !allowedEducationalExtensions.has(extension) || blockedEducationalMimeTypes.has(file.type.toLowerCase())) {
+    return 'Ce format de fichier n’est pas autorisé. Utilisez un document, une image, un fichier audio/vidéo ou une archive ZIP.'
+  }
+  if (fileName.length > 255) return 'Le nom du fichier est trop long.'
+  return undefined
+}
+
+async function storeEducationalFiles(files: File[]): Promise<ApiResult<FileAttachment[]>> {
+  const errors = files.map(educationalFileError).filter((error): error is string => Boolean(error))
+  if (errors.length) return { ok: false, error: errors[0] }
+  const stored: FileAttachment[] = []
+  for (const file of files) {
+    const storageId = `attachment-${crypto.randomUUID()}`
+    const result = await dataProvider.writeAttachment(storageId, file)
+    if (!result.ok) {
+      const cleanup = await Promise.all(stored.map((attachment) => dataProvider.deleteAttachment(attachment.storageId)))
+      const cleanupFailed = cleanup.some((item) => !item.ok)
+      return {
+        ok: false,
+        error: cleanupFailed
+          ? 'Le stockage a échoué et un fichier temporaire n’a pas pu être supprimé. Réinitialisez les données de démonstration.'
+          : result.error.message,
+      }
+    }
+    stored.push({
+      storageId,
+      name: file.name.replace(/[\\/\u0000-\u001f\u007f]/g, '_').trim(),
+      mimeType: file.type || 'application/octet-stream',
+      size: file.size,
+    })
+  }
+  return { ok: true, data: stored }
+}
+
+async function removeStoredFiles(attachments: FileAttachment[]): Promise<boolean> {
+  const results = await Promise.all(attachments.map((attachment) => dataProvider.deleteAttachment(attachment.storageId)))
+  return results.every((result) => result.ok)
+}
+
+function resourcesWithAttachments(resources: LiveResource[], attachments: FileAttachment[]): LiveResource[] {
+  return [
+    ...resources,
+    ...attachments.map((attachment) => ({ title: attachment.name.slice(0, 120), attachment })),
+  ]
+}
+
+async function readStoredFile(attachment: FileAttachment): Promise<ApiResult<{ blob: Blob; name: string; mimeType: string }>> {
+  const result = await dataProvider.readAttachment(attachment.storageId)
+  if (!result.ok) return { ok: false, error: result.error.message }
+  if (!result.data) return { ok: false, error: 'Le fichier demandé est introuvable.' }
+  return { ok: true, data: { blob: result.data, name: attachment.name, mimeType: attachment.mimeType } }
+}
 
 export function maskContactInfo(value: string): { text: string; masked: boolean } {
   let masked = false
@@ -219,7 +318,9 @@ export async function getSubjects(): Promise<Subject[]> {
   const visibleLessonIds = user?.role === 'student'
     ? new Set((await Promise.all(existingLessons.map(async (lesson) =>
       await studentCanAccessLesson(user, lesson) ? lesson.id : undefined))).filter((id): id is string => Boolean(id)))
-    : undefined
+    : !user
+      ? new Set(existingLessons.filter((lesson) => lesson.isFree).map((lesson) => lesson.id))
+      : undefined
   return catalog
     .filter((subject) => !student || subject.status === 'published')
     .sort((a, b) => a.order - b.order)
@@ -243,6 +344,39 @@ export async function getSubjects(): Promise<Subject[]> {
     }))
 }
 export async function getSubject(id: string): Promise<Subject | undefined> { return (await getSubjects()).find((subject) => subject.id === id) }
+
+export type ContentAccessRequest =
+  | { type: 'lesson'; lessonId: string }
+  | { type: 'exam-correction'; subjectId: string }
+  | { type: 'live-session'; sessionId: string }
+
+export async function getContentAccess(request: ContentAccessRequest): Promise<boolean> {
+  const user = await getCurrentUser()
+  const settings = await getSettings()
+
+  if (request.type === 'lesson') {
+    const lesson = (await allLessons()).find((item) => item.id === request.lessonId)
+    if (!lesson) return false
+    if (user?.role === 'admin') return true
+    if (user?.role === 'teacher') return lesson.ownerId === user.id
+    if (!user) return lesson.isFree
+    return studentCanAccessLesson(user, lesson)
+  }
+
+  if (request.type === 'exam-correction') {
+    if (user?.role === 'admin' || user?.role === 'teacher') return true
+    if (!user) return !settings.paymentsEnabled
+    if (settings.paymentsEnabled) return hasSubscriptionAccess('platform')
+    const [groups, enrollments] = await Promise.all([read('classGroups'), read('groupEnrollments')])
+    const eligibleGroupIds = new Set(enrollments
+      .filter((enrollment) => enrollment.studentId === user.id && enrollment.status === 'accepté')
+      .map((enrollment) => enrollment.groupId))
+    return groups.some((group) => group.subjectId === request.subjectId && eligibleGroupIds.has(group.id))
+  }
+
+  return canJoinLiveSession(request.sessionId)
+}
+
 export async function getLesson(id: string): Promise<Lesson | undefined> {
   const user = await getCurrentUser()
   let lesson = (await allLessons()).find((item) => item.id === id)
@@ -251,11 +385,12 @@ export async function getLesson(id: string): Promise<Lesson | undefined> {
     if (draft) lesson = lessonFromDraft(draft)
   }
   if (!lesson) return undefined
+  if (!user && !lesson.isFree) return undefined
   const educator = user?.role === 'admin' || user?.role === 'teacher' && lesson.ownerId === user.id
   const subject = (await read('subjects')).find((item) => item.id === lesson.subjectId)
   const chapter = subject?.chapters.find((item) => item.id === lesson.chapterId)
   if (!subject || !chapter) return undefined
-  if (user?.role === 'student' && (subject.status !== 'published' || chapter.status !== 'published' || lesson.status !== 'published')) return undefined
+  if ((!user || user.role === 'student') && (subject.status !== 'published' || chapter.status !== 'published' || lesson.status !== 'published')) return undefined
   if (user?.role === 'teacher' && !educator) return undefined
   if (user?.role === 'admin') return includeLegacyVideo(lesson)
   if (user?.role === 'student' && !await studentCanAccessLesson(user, lesson)) return undefined
@@ -269,9 +404,9 @@ export async function getExams(): Promise<Exam[]> {
   const catalog = await read('subjects')
   const visible = rows.filter((exam) => exam.status === 'published'
     && catalog.some((subject) => subject.id === exam.subjectId && subject.status === 'published'))
-  if (!(await getSettings()).paymentsEnabled) return visible
-  if (await hasSubscriptionAccess('platform')) return visible
-  return visible.map((exam) => ({ ...exam, correction: '' }))
+  const correctionAccess = await Promise.all(visible.map((exam) =>
+    getContentAccess({ type: 'exam-correction', subjectId: exam.subjectId })))
+  return visible.map((exam, index) => correctionAccess[index] ? exam : { ...exam, correction: '' })
 }
 export async function getLiveSessions(): Promise<LiveSession[]> {
   const user = await getCurrentUser()
@@ -301,6 +436,22 @@ export async function canJoinLiveSession(sessionId: string): Promise<boolean> {
   return hasSubscriptionAccess('platform')
 }
 
+export async function downloadLiveAttachment(
+  sessionId: string,
+  storageId: string,
+): Promise<ApiResult<{ blob: Blob; name: string; mimeType: string }>> {
+  const user = await getCurrentUser()
+  const session = (await readLiveSessions()).find((item) => item.id === sessionId)
+  if (!session || !user || user.role === 'admin'
+    || user.role === 'teacher' && user.id !== session.teacherId
+    || user.role === 'student' && !await canJoinLiveSession(sessionId)) {
+    return { ok: false, error: 'Vous ne pouvez pas accéder aux ressources de cette séance.' }
+  }
+  const attachment = session.resources.find((resource) => resource.attachment?.storageId === storageId)?.attachment
+  if (!attachment) return { ok: false, error: 'Le fichier demandé est introuvable.' }
+  return readStoredFile(attachment)
+}
+
 async function readLiveSessions(): Promise<LiveSession[]> {
   const saved = await read('liveSessions') as unknown[]
   if (!Array.isArray(saved)) throw new Error('Données de séances en direct invalides')
@@ -308,7 +459,7 @@ async function readLiveSessions(): Promise<LiveSession[]> {
     if (typeof value !== 'object' || value === null) throw new Error('Donnée de séance en direct invalide')
     const row = value as Record<string, unknown>
     const legacy = !('status' in row)
-    const normalized = legacy ? {
+    const normalized: Record<string, unknown> = legacy ? {
       id: row.id,
       title: row.title,
       description: '',
@@ -317,23 +468,85 @@ async function readLiveSessions(): Promise<LiveSession[]> {
       date: row.date,
       startTime: row.startTime ?? row.time,
       durationMinutes: 60,
-      provider: row.meetingUrl ? 'external' : 'livekit',
-      externalUrl: row.meetingUrl || undefined,
+      provider: 'livekit',
       status: row.cancelled ? 'cancelled' : 'scheduled',
       replayUrl: row.replay || undefined,
       resources: [],
       createdAt: new Date().toISOString(),
-    } : row
+    } : { ...row }
+    if (normalized.provider !== 'livekit' || 'externalUrl' in normalized || 'meetingUrl' in normalized) {
+      normalized.provider = 'livekit'
+      delete normalized.externalUrl
+      delete normalized.meetingUrl
+    }
     const parsed = liveSessionSchema.safeParse(normalized)
     if (!parsed.success) throw new Error('Données de séances en direct endommagées')
     return parsed.data
   })
-  if (saved.some((value) => typeof value === 'object' && value !== null && !('status' in value))) {
+  if (saved.some((value) => typeof value === 'object' && value !== null
+    && (!('status' in value) || ('provider' in value && value.provider !== 'livekit')
+      || 'externalUrl' in value || 'meetingUrl' in value))) {
     await write('liveSessions', sessions)
   }
   return sessions
 }
 export async function getCurrentUser(): Promise<User | null> {
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+    if (sessionError) throw new Error('Impossible de vérifier la session.')
+    if (!sessionData.session) return null
+
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+    if (authError) throw new Error('Impossible de vérifier la session.')
+    if (!authData.user) return null
+
+    const { data: profileData, error: profileError } = await supabase
+      .from('profiles')
+      .select('full_name, section_id, role, blocked, avatar_url')
+      .eq('id', authData.user.id)
+      .maybeSingle()
+    if (profileError) throw new Error('Impossible de charger le profil.')
+    if (!profileData) return null
+
+    const profile = profileData as {
+      full_name: string
+      section_id: string | null
+      role: unknown
+      blocked: boolean
+      avatar_url: string | null
+    }
+    if (profile.role !== 'student' && profile.role !== 'teacher' && profile.role !== 'admin') {
+      throw new Error('Le rôle du compte est invalide.')
+    }
+    if (profile.blocked) {
+      const { error } = await supabase.auth.signOut({ scope: 'local' })
+      if (error) throw new Error('Impossible de fermer la session du compte bloqué.')
+      return null
+    }
+
+    const [privateResult, sectionResult] = await Promise.all([
+      supabase.from('profile_private').select('phone').eq('user_id', authData.user.id).maybeSingle(),
+      profile.section_id
+        ? supabase.from('sections').select('name').eq('id', profile.section_id).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+    ])
+    if (privateResult.error || sectionResult.error) throw new Error('Impossible de charger le profil.')
+    const privateProfile = privateResult.data as { phone: string | null } | null
+    const section = sectionResult.data as { name: string } | null
+    return {
+      id: authData.user.id,
+      name: profile.full_name,
+      email: authData.user.email ?? '',
+      phone: privateProfile?.phone ?? '',
+      section: section?.name ?? 'Non renseignée',
+      sectionId: profile.section_id ?? undefined,
+      role: profile.role,
+      blocked: false,
+      avatarUrl: profile.avatar_url ?? undefined,
+    }
+  }
+
   const session = await read('user')
   if (!session) return null
   const account = (await read('users')).find((user) => user.id === session.id)
@@ -359,11 +572,46 @@ export async function registerUser(user: User): Promise<User> {
   await write('user', user)
   return user
 }
-export async function signOut(): Promise<void> { await write('user', null) }
+export async function signOut(): Promise<void> {
+  if (getSupabaseEnvironment()) {
+    const { error } = await getSupabaseBrowserClient().auth.signOut()
+    if (error) throw new Error('Impossible de fermer la session.')
+    return
+  }
+  await write('user', null)
+}
 export async function updateProfile(user: User): Promise<User> {
   const current = await getCurrentUser()
   if (!current || current.id !== user.id) throw new Error('You can only update your own profile')
   if (user.role !== current.role || user.name.trim().length < 2 || !/^\+?[\d\s()-]{8,}$/.test(user.phone.trim())) throw new Error('Invalid profile')
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const { data: section, error: sectionError } = await supabase
+      .from('sections')
+      .select('id')
+      .eq('name', user.section)
+      .maybeSingle()
+    if (sectionError) throw new Error('Impossible de vérifier la filière.')
+    if (!section) throw new Error('La filière sélectionnée est introuvable.')
+
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .update({
+        full_name: user.name.trim(),
+        section_id: section.id,
+        avatar_url: user.avatarUrl ?? null,
+      })
+      .eq('id', user.id)
+    if (profileError) throw new Error('Impossible d’enregistrer le profil.')
+
+    const { error: privateError } = await supabase
+      .from('profile_private')
+      .upsert({ user_id: user.id, phone: user.phone.trim() })
+    if (privateError) throw new Error('Impossible d’enregistrer le numéro de téléphone.')
+
+    return { ...user, name: user.name.trim(), sectionId: section.id }
+  }
+
   const users = await read('users')
   await write('users', users.map((item) => item.id === user.id ? user : item))
   const credentials = await getAuthCredentials()
@@ -674,6 +922,15 @@ export async function createLiveSession(session: LiveSessionInput): Promise<ApiR
   if (!(await read('subjects')).some((subject) => subject.id === parsed.data.subjectId)) {
     return { ok: false, error: 'Select a valid subject' }
   }
+  if (parsed.data.groupId) {
+    const group = (await read('classGroups')).find((item) => item.id === parsed.data.groupId)
+    if (!group || user.role === 'teacher' && group.teacherId !== user.id) {
+      return { ok: false, error: 'Cette classe ne vous appartient pas.' }
+    }
+    if (group.subjectId !== parsed.data.subjectId) {
+      return { ok: false, error: 'La matière ne correspond pas à la classe sélectionnée.' }
+    }
+  }
   const nextParsed = liveSessionSchema.safeParse({
     ...parsed.data,
     teacherId: user.id,
@@ -694,9 +951,91 @@ export async function updateLiveSession(id: string, changes: LiveSessionChanges)
   const current = sessions.find((session) => session.id === id)
   if (!current || (user.role !== 'admin' && current.teacherId !== user.id)) return { ok: false, error: 'You can only edit your own sessions' }
   const next = { ...current, ...changes }
+  if (next.groupId) {
+    const group = (await read('classGroups')).find((item) => item.id === next.groupId)
+    if (!group || user.role === 'teacher' && group.teacherId !== user.id) {
+      return { ok: false, error: 'Cette classe ne vous appartient pas.' }
+    }
+    if (group.subjectId !== next.subjectId) {
+      return { ok: false, error: 'La matière ne correspond pas à la classe sélectionnée.' }
+    }
+  }
   if (!liveSessionSchema.safeParse(next).success) return { ok: false, error: 'Invalid live session details' }
   await write('liveSessions', [next, ...sessions.filter((session) => session.id !== id)])
   return { ok: true, data: next }
+}
+
+export async function createLiveSessionWithFiles(
+  session: LiveSessionInput,
+  files: File[],
+): Promise<ApiResult<LiveSession>> {
+  if (!files.length) return createLiveSession(session)
+  const stored = await storeEducationalFiles(files)
+  if (!stored.ok) return stored
+  const created = await createLiveSession({
+    ...session,
+    resources: resourcesWithAttachments(session.resources, stored.data),
+  })
+  if (created.ok) return created
+  if (!await removeStoredFiles(stored.data)) {
+    return { ok: false, error: `${created.error} Les fichiers temporaires n’ont pas pu être supprimés.` }
+  }
+  return created
+}
+
+export async function updateLiveSessionWithFiles(
+  id: string,
+  changes: LiveSessionChanges,
+  files: File[],
+): Promise<ApiResult<LiveSession>> {
+  if (!files.length) return updateLiveSession(id, changes)
+  const stored = await storeEducationalFiles(files)
+  if (!stored.ok) return stored
+  const current = (await readLiveSessions()).find((session) => session.id === id)
+  if (!current) {
+    if (!await removeStoredFiles(stored.data)) {
+      return { ok: false, error: 'La séance est introuvable et les fichiers temporaires n’ont pas pu être supprimés.' }
+    }
+    return { ok: false, error: 'Séance introuvable.' }
+  }
+  const updated = await updateLiveSession(id, {
+    ...changes,
+    resources: resourcesWithAttachments(changes.resources ?? current.resources, stored.data),
+  })
+  if (updated.ok) return updated
+  if (!await removeStoredFiles(stored.data)) {
+    return { ok: false, error: `${updated.error} Les fichiers temporaires n’ont pas pu être supprimés.` }
+  }
+  return updated
+}
+
+export async function createWeeklyLiveSessionsWithFiles(
+  session: LiveSessionInput,
+  count: number,
+  files: File[],
+): Promise<ApiResult<LiveSession[]>> {
+  if (!files.length) return createWeeklyLiveSessions(session, count)
+  if (!Number.isInteger(count) || count < 1 || count > 8) return { ok: false, error: 'Nombre de séances invalide.' }
+  const stored = await storeEducationalFiles(files)
+  if (!stored.ok) return stored
+  const sessions: LiveSession[] = []
+  for (let week = 0; week < count; week += 1) {
+    const date = new Date(`${session.date}T00:00:00.000Z`)
+    date.setUTCDate(date.getUTCDate() + week * 7)
+    const created = await createLiveSession({
+      ...session,
+      resources: resourcesWithAttachments(session.resources, stored.data),
+      date: date.toISOString().slice(0, 10),
+    })
+    if (!created.ok) {
+      if (!sessions.length && !await removeStoredFiles(stored.data)) {
+        return { ok: false, error: `${created.error} Les fichiers temporaires n’ont pas pu être supprimés.` }
+      }
+      return created
+    }
+    sessions.push(created.data)
+  }
+  return { ok: true, data: sessions }
 }
 
 export async function setLiveSessionStatus(id: string, status: LiveSession['status']): Promise<ApiResult<LiveSession>> {
@@ -1515,6 +1854,18 @@ function groupForViewer(group: ClassGroup, paymentsEnabled: boolean): ClassGroup
 
 export async function listSections(includeInactive = false): Promise<BacSection[]> {
   const user = await getCurrentUser()
+  if (getSupabaseEnvironment()) {
+    const { data, error } = await getSupabaseBrowserClient()
+      .from('sections')
+      .select('id, name, display_order, active')
+      .order('display_order')
+    if (error) throw new Error('Impossible de charger les filières.')
+    const sections = (data ?? []).map((row) => {
+      const section = row as { id: string; name: string; display_order: number; active: boolean }
+      return { id: section.id, name: section.name, order: section.display_order, active: section.active }
+    })
+    return sections.filter((section) => includeInactive && user?.role === 'admin' || section.active)
+  }
   const sections = await read('sections')
   return sections.filter((section) => includeInactive && user?.role === 'admin' || section.active)
     .sort((a, b) => a.order - b.order)
@@ -1525,6 +1876,27 @@ export async function saveSection(input: { id?: string; name: string; active?: b
   if (user?.role !== 'admin') return { ok: false, error: 'Réservé à l’administration.' }
   const name = input.name.trim()
   if (name.length < 2 || name.length > 80) return { ok: false, error: 'Le nom de la filière est invalide.' }
+  if (getSupabaseEnvironment()) {
+    const sections = await listSections(true)
+    if (sections.some((section) => section.id !== input.id && section.name.toLocaleLowerCase('fr-FR') === name.toLocaleLowerCase('fr-FR'))) {
+      return { ok: false, error: 'Cette filière existe déjà.' }
+    }
+    const existing = sections.find((section) => section.id === input.id)
+    const sectionData = {
+      id: existing?.id ?? input.id ?? makeId('section'),
+      name,
+      display_order: existing?.order ?? sections.length,
+      active: input.active ?? existing?.active ?? true,
+    }
+    const { data, error } = await getSupabaseBrowserClient()
+      .from('sections')
+      .upsert(sectionData)
+      .select('id, name, display_order, active')
+      .single()
+    if (error || !data) return { ok: false, error: 'Impossible d’enregistrer la filière.' }
+    const saved = data as { id: string; name: string; display_order: number; active: boolean }
+    return { ok: true, data: { id: saved.id, name: saved.name, order: saved.display_order, active: saved.active } }
+  }
   const sections = await read('sections')
   const existing = sections.find((section) => section.id === input.id)
   if (sections.some((section) => section.id !== input.id && section.name.toLocaleLowerCase('fr-FR') === name.toLocaleLowerCase('fr-FR'))) {
@@ -2494,6 +2866,76 @@ export async function getGroupAnnouncements(groupId: string): Promise<GroupAnnou
       || user?.role !== 'admin' && user?.role !== 'teacher' && user?.role !== 'student') return []
     return (await read('groupAnnouncements')).filter((item) => item.groupId === groupId && !item.hidden)
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt))
+}
+
+export async function getGroupMaterials(groupId: string): Promise<GroupMaterial[]> {
+    const user = await getCurrentUser()
+    const group = (await read('classGroups')).find((item) => item.id === groupId)
+    if (!group || !user
+      || user.role === 'teacher' && group.teacherId !== user.id
+      || user.role === 'student' && !await hasGroupContentAccess(user.id, groupId)) return []
+    return (await read('groupMaterials')).filter((item) => item.groupId === groupId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+export async function addGroupMaterial(
+    groupId: string,
+    title: string,
+    file: File,
+): Promise<ApiResult<GroupMaterial>> {
+    const user = await getCurrentUser()
+    if (user?.role !== 'teacher') return { ok: false, error: 'Réservé aux enseignants.' }
+    const group = (await read('classGroups')).find((item) => item.id === groupId && item.teacherId === user.id)
+    if (!group) return { ok: false, error: 'Cette classe ne vous appartient pas.' }
+    if (title.trim().length < 1 || title.trim().length > 120) return { ok: false, error: 'Le titre doit contenir de 1 à 120 caractères.' }
+    const stored = await storeEducationalFiles([file])
+    if (!stored.ok) return stored
+    const material: GroupMaterial = {
+      id: makeId('group-material'),
+      groupId,
+      teacherId: user.id,
+      title: title.trim(),
+      attachment: stored.data[0],
+      createdAt: timestamp(),
+    }
+    try {
+      await write('groupMaterials', [material, ...await read('groupMaterials')])
+    } catch (error) {
+      if (!await removeStoredFiles(stored.data)) {
+        return { ok: false, error: 'La ressource n’a pas pu être enregistrée et le fichier temporaire n’a pas pu être supprimé.' }
+      }
+      return { ok: false, error: error instanceof Error ? error.message : 'Impossible d’enregistrer la ressource.' }
+    }
+    return { ok: true, data: material }
+}
+
+export async function removeGroupMaterial(materialId: string): Promise<ApiResult<void>> {
+    const user = await getCurrentUser()
+    if (user?.role !== 'teacher' && user?.role !== 'admin') return { ok: false, error: 'Réservé aux enseignants.' }
+    const materials = await read('groupMaterials')
+    const material = materials.find((item) => item.id === materialId)
+    const group = material && (await read('classGroups')).find((item) => item.id === material.groupId)
+    if (!material || !group || user.role === 'teacher' && group.teacherId !== user.id) {
+      return { ok: false, error: 'Cette ressource ne vous appartient pas.' }
+    }
+    await write('groupMaterials', materials.filter((item) => item.id !== materialId))
+    const deleted = await dataProvider.deleteAttachment(material.attachment.storageId)
+    if (!deleted.ok) return { ok: false, error: 'La ressource a été retirée, mais son fichier n’a pas pu être supprimé du stockage.' }
+    return { ok: true, data: undefined }
+}
+
+export async function downloadGroupMaterial(
+    materialId: string,
+): Promise<ApiResult<{ blob: Blob; name: string; mimeType: string }>> {
+    const user = await getCurrentUser()
+    const material = (await read('groupMaterials')).find((item) => item.id === materialId)
+    const group = material && (await read('classGroups')).find((item) => item.id === material.groupId)
+    if (!user || !material || !group
+      || user.role === 'teacher' && group.teacherId !== user.id
+      || user.role === 'student' && !await hasGroupContentAccess(user.id, group.id)) {
+      return { ok: false, error: 'Vous ne pouvez pas accéder à cette ressource.' }
+    }
+    return readStoredFile(material.attachment)
 }
 
 export async function submitGroupPayment(

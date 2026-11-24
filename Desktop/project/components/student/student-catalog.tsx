@@ -5,13 +5,13 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { BookOpen, CalendarDays, CheckCircle2, ChevronDown, CirclePlay, Download, ExternalLink, FileText, LockKeyhole, Target } from 'lucide-react'
 import * as api from '@/lib/api'
-import { calculateQuizScore } from '@/lib/quiz-score'
-import type { Exam, Lesson, LiveSession, Subject, Subscription } from '@/types'
+import type { Exam, Lesson, LiveSession, Subject } from '@/types'
 import { useLanguage } from '@/components/shared/language-provider'
 import { useAuth } from '@/components/shared/auth-provider'
 import { formatLiveSessionDate, liveSessionStart, toCalendarTimestamp } from '@/lib/live-time'
 import { LessonVideoPlayer } from '@/components/student/lesson-video-player'
 import { LessonQuestions } from '@/components/relationships/relationship-pages'
+import { showApiError } from '@/components/shared/api-error'
 
 export function SubjectCatalog() {
   const { t } = useLanguage()
@@ -37,15 +37,23 @@ export function SubjectPage({ id }: { id: string }) {
   if (!subject) return <section className="app-page"><div className="loading-surface"><span className="skeleton-line"/><span className="skeleton-line"/></div></section>
   const lessons = subject.chapters.flatMap((chapter) => chapter.lessons)
   const totalDuration = lessons.reduce((total, lesson) => total + lesson.duration, 0)
-  return <section className="app-page"><header className="page-heading"><div><p className="section-kicker">{t('courses')}</p><h1>{subject.titleFr}</h1><p>{subject.description}</p><p>{subject.chapters.length} modules · {lessons.length} cours · {totalDuration} min · {lessons.filter((lesson) => completed.includes(lesson.id)).length}/{lessons.length} {t('completed')}</p></div>{user?.role === 'student' && <button className="button-primary" type="button" disabled={enrolled} onClick={async () => { const result = await api.enrollInSubject(id); if (!result.ok) toast.error(result.error); else { setEnrolled(true); toast.success('Inscription enregistrée.') } }}>{enrolled ? 'Inscrit(e)' : 'M’inscrire à cette matière'}</button>}</header>{subject.chapters.map((chapter) => <details className="chapter-box" key={chapter.id} open><summary><span><strong>{chapter.title}</strong><small>{chapter.lessons.length} cours · {chapter.lessons.reduce((total, lesson) => total + lesson.duration, 0)} min</small></span><ChevronDown className="chapter-chevron" aria-hidden="true"/></summary><div className="chapter-lessons">{chapter.lessons.map((lesson) => <LessonLink key={lesson.id} lesson={lesson}/>)}</div></details>)}</section>
+  return <section className="app-page"><header className="page-heading"><div><p className="section-kicker">{t('courses')}</p><h1>{subject.titleFr}</h1><p>{subject.description}</p><p>{subject.chapters.length} modules · {lessons.length} cours · {totalDuration} min · {lessons.filter((lesson) => completed.includes(lesson.id)).length}/{lessons.length} {t('completed')}</p></div>{user?.role === 'student' && <button className="button-primary" type="button" disabled={enrolled} onClick={async () => { const result = await api.enrollInSubject(id); if (!result.ok) showApiError(result.error); else { setEnrolled(true); toast.success('Inscription enregistrée.') } }}>{enrolled ? 'Inscrit(e)' : 'M’inscrire à cette matière'}</button>}</header>{subject.chapters.map((chapter) => <details className="chapter-box" key={chapter.id} open><summary><span><strong>{chapter.title}</strong><small>{chapter.lessons.length} cours · {chapter.lessons.reduce((total, lesson) => total + lesson.duration, 0)} min</small></span><ChevronDown className="chapter-chevron" aria-hidden="true"/></summary><div className="chapter-lessons">{chapter.lessons.map((lesson) => <LessonLink key={lesson.id} lesson={lesson}/>)}</div></details>)}</section>
 }
 
 function LessonLink({ lesson }: { lesson: Lesson }) {
   const { t } = useLanguage()
-  const [active, setActive] = useState(false)
-  useEffect(() => { void api.getSubscription().then((subscription) => setActive(subscription.status === 'Active')) }, [])
-  const locked = !lesson.isFree && !active
-  return <Link className={`lesson-row${locked ? ' is-locked' : ''}`} href={locked ? '/pricing' : `/lessons/${lesson.id}`}><span className="lesson-row-icon">{locked ? <LockKeyhole aria-hidden="true"/> : lesson.isFree ? <CirclePlay aria-hidden="true"/> : <BookOpen aria-hidden="true"/>}</span><span className="lesson-row-copy"><strong>{lesson.title}</strong><small>{lesson.duration} min · {lesson.isFree ? t('free') : t('paid')}</small></span><span className="lesson-row-status">{locked ? t('locked') : t('open')}</span></Link>
+  const { user } = useAuth()
+  const [allowed, setAllowed] = useState(lesson.isFree || user?.role === 'teacher' || user?.role === 'admin')
+  useEffect(() => {
+    let active = true
+    void api.getContentAccess({ type: 'lesson', lessonId: lesson.id })
+      .then((access) => { if (active) setAllowed(access) })
+      .catch(() => toast.error(t('unknownError')))
+    return () => { active = false }
+  }, [lesson.id, t, user?.id, user?.role])
+  const locked = !allowed
+  const lockedHref = user ? '/groups' : '/login'
+  return <Link className={`lesson-row${locked ? ' is-locked' : ''}`} href={locked ? lockedHref : `/lessons/${lesson.id}`}><span className="lesson-row-icon">{locked ? <LockKeyhole aria-hidden="true"/> : lesson.isFree ? <CirclePlay aria-hidden="true"/> : <BookOpen aria-hidden="true"/>}</span><span className="lesson-row-copy"><strong>{lesson.title}</strong><small>{lesson.duration} min · {lesson.isFree ? t('free') : t('paid')}</small></span><span className="lesson-row-status">{locked ? t('locked') : t('open')}</span></Link>
 }
 
 export function ExamList() {
@@ -53,29 +61,52 @@ export function ExamList() {
   const [exams, setExams] = useState<Exam[]>([])
   const [subject, setSubject] = useState('all')
   const [year, setYear] = useState('all')
-  const [subscription, setSubscription] = useState<Subscription>({ status: 'None' })
-  useEffect(() => { void Promise.all([api.getExams(), api.getSubscription()]).then(([rows, plan]) => { setExams(rows); setSubscription(plan) }) }, [])
+  const [paymentsEnabled, setPaymentsEnabled] = useState(false)
+  const [correctionAccess, setCorrectionAccess] = useState<Record<string, boolean>>({})
+  useEffect(() => {
+    void Promise.all([api.getExams(), api.getSettings()])
+      .then(async ([rows, settings]) => {
+        setExams(rows)
+        setPaymentsEnabled(Boolean(settings.paymentsEnabled))
+        const access = await Promise.all(rows.map((exam) =>
+          api.getContentAccess({ type: 'exam-correction', subjectId: exam.subjectId })))
+        setCorrectionAccess(Object.fromEntries(rows.map((exam, index) => [exam.id, access[index]])))
+      })
+      .catch(() => toast.error(t('unknownError')))
+  }, [t])
   const rows = exams.filter((exam) => (subject === 'all' || exam.subjectId === subject) && (year === 'all' || String(exam.year) === year))
-  return <section className="app-page"><header className="page-heading"><div><p className="section-kicker">Sujets et corrections</p><h1>{t('exams')}</h1><p>Retrouvez les sujets disponibles et leurs corrections.</p></div></header><div className="catalog-toolbar"><label>{t('subject')}<select value={subject} onChange={(event) => setSubject(event.target.value)}><option value="all">{t('all')}</option><option value="math">{t('subjectMath')}</option><option value="physics">{t('subjectPhysics')}</option></select></label><label>{t('date')}<select value={year} onChange={(event) => setYear(event.target.value)}><option value="all">{t('all')}</option>{[...new Set(exams.map((exam) => exam.year))].map((item) => <option key={item}>{item}</option>)}</select></label></div>{rows.map((exam) => <details className="exam-card" key={exam.id}><summary><span className="exam-icon"><FileText aria-hidden="true"/></span><span>{exam.subjectId === 'math' ? t('subjectMath') : t('subjectPhysics')} · {exam.year} · {exam.session}</span></summary><pre>{exam.statement}</pre>{subscription.status === 'Active' ? <p>{exam.correction}</p> : <Link className="button-soft" href="/pricing"><LockKeyhole aria-hidden="true"/>{t('locked')}</Link>}</details>)}{rows.length === 0 && <div className="empty-state"><FileText aria-hidden="true"/><h2>{t('noData')}</h2><p>Les annales apparaîtront ici lorsqu’elles seront publiées.</p></div>}</section>
+  return <section className="app-page"><header className="page-heading"><div><p className="section-kicker">Sujets et corrections</p><h1>{t('exams')}</h1><p>Retrouvez les sujets disponibles et leurs corrections.</p></div></header><div className="catalog-toolbar"><label>{t('subject')}<select value={subject} onChange={(event) => setSubject(event.target.value)}><option value="all">{t('all')}</option><option value="math">{t('subjectMath')}</option><option value="physics">{t('subjectPhysics')}</option></select></label><label>{t('date')}<select value={year} onChange={(event) => setYear(event.target.value)}><option value="all">{t('all')}</option>{[...new Set(exams.map((exam) => exam.year))].map((item) => <option key={item}>{item}</option>)}</select></label></div>{rows.map((exam) => {
+    const locked = !correctionAccess[exam.id] || !exam.correction
+    const lockedHref = paymentsEnabled ? '/pricing' : '/groups'
+    return <details className="exam-card" key={exam.id}><summary><span className="exam-icon"><FileText aria-hidden="true"/></span><span>{exam.subjectId === 'math' ? t('subjectMath') : t('subjectPhysics')} · {exam.year} · {exam.session}</span></summary><pre>{exam.statement}</pre>{locked ? <Link className="button-soft" href={lockedHref}><LockKeyhole aria-hidden="true"/>{t('locked')}</Link> : <p>{exam.correction}</p>}</details>
+  })}{rows.length === 0 && <div className="empty-state"><FileText aria-hidden="true"/><h2>{t('noData')}</h2><p>Les annales apparaîtront ici lorsqu’elles seront publiées.</p></div>}</section>
 }
 
 export function LiveSessions() {
   const { t } = useLanguage()
+  const { user } = useAuth()
   const [sessions, setSessions] = useState<LiveSession[]>([])
-  const [active, setActive] = useState(false)
+  const [sessionAccess, setSessionAccess] = useState<Record<string, boolean>>({})
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    void Promise.all([api.getLiveSessions(), api.getSubscription()]).then(([rows, plan]) => { setSessions(rows); setActive(plan.status === 'Active'); setNow(Date.now()) }).catch(() => toast.error(t('unknownError')))
+    void api.getLiveSessions().then(async (rows) => {
+      setSessions(rows)
+      setNow(Date.now())
+      const access = await Promise.all(rows.map((session) =>
+        api.getContentAccess({ type: 'live-session', sessionId: session.id })))
+      setSessionAccess(Object.fromEntries(rows.map((session, index) => [session.id, access[index]])))
+    }).catch(() => toast.error(t('unknownError')))
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
-  }, [t])
+  }, [t, user?.id, user?.role])
   const live = sessions.filter((session) => session.status === 'live')
   const upcoming = sessions.filter((session) => session.status === 'scheduled').sort((a, b) => liveSessionStart(a).getTime() - liveSessionStart(b).getTime())
   const replays = sessions.filter((session) => session.status === 'ended' && session.replayUrl)
   const joinWindow = (session: LiveSession) => now >= liveSessionStart(session).getTime() - 15 * 60_000
   const renderSession = (session: LiveSession, isLive = false) => {
     const start = liveSessionStart(session).getTime()
-    const canJoin = active && joinWindow(session) && now <= start + session.durationMinutes * 60_000
+    const canJoin = joinWindow(session) && now <= start + session.durationMinutes * 60_000
+      && (user?.role !== 'student' || sessionAccess[session.id] === true)
     return <article className="session-card live-session-card" key={session.id}>
       <div className="live-session-meta"><span className="session-date"><CalendarDays aria-hidden="true"/>{formatLiveSessionDate(session)}</span>{isLive && <span className="live-indicator"><i/> EN DIRECT</span>}</div>
       <h2>{session.title}</h2>
@@ -83,9 +114,7 @@ export function LiveSessions() {
       {!isLive && <p className="session-countdown">{t('startsIn')}: {countdown(Math.max(0, start - now), t)}</p>}
       {canJoin
         ? <Link className="button-primary" href={`/live/${session.id}`}>{t('joinSession')}</Link>
-        : active
-          ? <button className="button-soft" disabled>{isLive ? 'Connexion bientôt disponible' : 'Ouverture 15 min avant le début'}</button>
-          : <Link className="button-soft" href="/pricing">{t('locked')}</Link>}
+        : <button className="button-soft" disabled>{isLive ? 'Connexion bientôt disponible' : 'Ouverture 15 min avant le début'}</button>}
       {!isLive && <button className="calendar-download" type="button" onClick={() => downloadSessionCalendar(session)}><Download aria-hidden="true"/> Ajouter au calendrier</button>}
     </article>
   }

@@ -40,7 +40,6 @@ export function verifyLiveAccess(
   if (!parsed.success) return { ok: false, status: 400, error: 'Les informations de connexion sont invalides.' }
   const { session, caller } = parsed.data
   if (caller.role === 'admin') return { ok: false, status: 403, error: 'Les administrateurs ne peuvent pas rejoindre cette salle.' }
-  if (session.provider !== 'livekit') return { ok: false, status: 400, error: 'Cette séance utilise un lien externe.' }
   if (session.status === 'cancelled' || session.status === 'ended') return { ok: false, status: 410, error: 'Cette séance est terminée ou annulée.' }
   const startsAt = liveSessionStart(session).getTime()
   const now = Date.now()

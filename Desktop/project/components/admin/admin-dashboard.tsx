@@ -90,7 +90,7 @@ function AdminLiveManagement({ sessions, refresh }: { sessions: LiveSession[]; r
     if (session.status === 'live' && session.provider === 'livekit' && user?.role === 'admin') {
       const ended = await terminateLiveKitRoom(session, user)
       if (!ended.ok) {
-        toast.error(ended.error)
+        toast.error(translateApiError(ended.error, t))
         return
       }
     }

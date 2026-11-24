@@ -11,7 +11,17 @@ const webUrlSchema = z.string().url().refine((value) => {
 
 export const liveResourceSchema = z.object({
   title: z.string().trim().min(1).max(120),
-  url: webUrlSchema,
+  url: webUrlSchema.optional(),
+  attachment: z.object({
+    storageId: z.string().min(1),
+    name: z.string().min(1).max(255),
+    mimeType: z.string().max(120),
+    size: z.number().int().positive().max(10 * 1024 * 1024),
+  }).optional(),
+}).superRefine((resource, context) => {
+  if (Boolean(resource.url) === Boolean(resource.attachment)) {
+    context.addIssue({ code: 'custom', message: 'Une ressource doit être un lien ou un fichier.' })
+  }
 })
 
 const liveSessionBaseSchema = z.object({
@@ -27,8 +37,7 @@ const liveSessionBaseSchema = z.object({
   }),
   startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
   durationMinutes: z.number().int().min(15).max(240),
-  provider: z.enum(['livekit', 'external']),
-  externalUrl: webUrlSchema.optional(),
+  provider: z.literal('livekit'),
   status: z.enum(['scheduled', 'live', 'ended', 'cancelled']),
   replayUrl: webUrlSchema.optional(),
   changeReason: z.string().max(1000).optional(),
@@ -36,26 +45,14 @@ const liveSessionBaseSchema = z.object({
   createdAt: z.string().datetime(),
 })
 
-function validateProviderUrl(
-  session: Pick<z.infer<typeof liveSessionBaseSchema>, 'provider' | 'externalUrl'>,
-  context: z.RefinementCtx,
-) {
-  if (session.provider === 'external' && !session.externalUrl) {
-    context.addIssue({ code: 'custom', path: ['externalUrl'], message: 'Un lien de séance est requis' })
-  }
-  if (session.provider === 'livekit' && session.externalUrl) {
-    context.addIssue({ code: 'custom', path: ['externalUrl'], message: 'Le lien externe ne s’applique pas à une salle LiveKit' })
-  }
-}
-
-export const liveSessionSchema = liveSessionBaseSchema.superRefine(validateProviderUrl)
+export const liveSessionSchema = liveSessionBaseSchema
 
 export const liveSessionInputSchema = liveSessionBaseSchema.omit({
   id: true,
   teacherId: true,
   status: true,
   createdAt: true,
-}).superRefine(validateProviderUrl).superRefine((session, context) => {
+}).superRefine((session, context) => {
   const today = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Africa/Tunis',
     year: 'numeric',

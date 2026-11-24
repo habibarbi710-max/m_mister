@@ -13,6 +13,7 @@ import type {
   GroupAttendance,
   GroupContentLink,
   GroupEnrollment,
+  GroupMaterial,
   GroupPayment,
   Lesson,
   LiveSession,
@@ -21,7 +22,9 @@ import type {
 } from '@/types'
 import type { GroupStudentSummary } from '@/lib/api'
 import { useAuth } from '@/components/shared/auth-provider'
+import { showApiError } from '@/components/shared/api-error'
 import { formatLiveSessionDate, liveSessionStart } from '@/lib/live-time'
+import { downloadBlob } from '@/components/shared/download-file'
 
 type TeacherCard = NonNullable<Awaited<ReturnType<typeof api.getTeacherProfile>>>
 type GroupCardData = { group: ClassGroup; teacher?: TeacherCard; acceptedCount: number; sectionName?: string }
@@ -30,6 +33,7 @@ type StudentGroupData = {
   group: ClassGroup
   lessons: Lesson[]
   announcements: GroupAnnouncement[]
+  materials: GroupMaterial[]
   sessions: LiveSession[]
   average: number | null
   homework: Awaited<ReturnType<typeof api.getMyHomework>>
@@ -137,7 +141,7 @@ export function GroupDetailPage({ groupId }: { groupId: string }) {
   }, [groupId])
   async function requestJoin() {
     const result = await api.requestGroupEnrollment(groupId)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setEnrollment(result.data)
     toast.success('Votre demande a été envoyée au professeur.')
   }
@@ -183,13 +187,14 @@ export function StudentGroupsPage() {
       ])
       const details = await Promise.all(enrollments.map(async ({ enrollment, group }) => {
         if (enrollment.status !== 'accepté') return {
-          enrollment, group, lessons: [], announcements: [], sessions: [], average: null, homework: [],
+          enrollment, group, lessons: [], announcements: [], materials: [], sessions: [], average: null, homework: [],
         }
-        const [lessons, announcements, grades] = await Promise.all([
-          api.getGroupLessons(group.id), api.getGroupAnnouncements(group.id), api.getGroupGrades(group.id),
+        const [lessons, announcements, materials, grades] = await Promise.all([
+          api.getGroupLessons(group.id), api.getGroupAnnouncements(group.id),
+          api.getGroupMaterials(group.id), api.getGroupGrades(group.id),
         ])
         return {
-          enrollment, group, lessons, announcements,
+          enrollment, group, lessons, announcements, materials,
           sessions: sessions.filter((session) => session.groupId === group.id),
           average: grades?.average ?? null,
           homework: homework.filter((item) => item.assignment.groupId === group.id),
@@ -209,7 +214,7 @@ export function StudentGroupsPage() {
   async function leave(groupId: string) {
     if (!window.confirm('Voulez-vous vraiment quitter cette classe ?')) return
     const result = await api.leaveClassGroup(groupId)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
     toast.success('Vous avez quitté la classe.')
   }
@@ -217,7 +222,7 @@ export function StudentGroupsPage() {
     const reason = window.prompt('Pourquoi souhaitez-vous signaler cette annonce ?')
     if (reason === null) return
     const result = await api.createReport('announcement', announcementId, reason)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     toast.success('Votre signalement a été transmis à la modération.')
   }
   return <section className="app-page">
@@ -242,6 +247,13 @@ export function StudentGroupsPage() {
               <button className="button-soft" type="button" onClick={() => void reportAnnouncement(item.id)}>Signaler</button>
             </article>) : <p>Aucune annonce pour le moment.</p>}
             <h3>Contenu de la classe</h3>{row.lessons.length ? row.lessons.map((lesson) => <p className="group-content-lesson" key={lesson.id}><Link href={`/lessons/${lesson.id}`}>{lesson.title}</Link></p>) : <p>Les leçons de la classe apparaîtront ici.</p>}
+            <h3>Documents et ressources</h3>{row.materials.length ? <ul className="group-material-list">{row.materials.map((material) =>
+              <li key={material.id}><span>{material.title} · {material.attachment.name}</span>
+                <button className="button-soft" type="button" onClick={async () => {
+                  const result = await api.downloadGroupMaterial(material.id)
+                  if (!result.ok) return showApiError(result.error)
+                  downloadBlob(result.data.blob, result.data.name)
+                }}>Télécharger</button></li>)}</ul> : <p>Aucune ressource partagée pour le moment.</p>}
             <p className="group-inline-links"><Link href="/student/homework">Mes devoirs</Link><Link href="/student/record">Mon dossier</Link><Link href="/student/schedule">Mon emploi du temps</Link></p>
           </>}
         </article>)}</div>}
@@ -274,7 +286,7 @@ function GroupPaymentPanel({ groupId, monthlyPrice, instructions }: { groupId: s
     try {
       const data = await fileToDataUrl(receipt)
       const result = await api.submitGroupPayment(groupId, period, data, receipt.type)
-      if (!result.ok) return toast.error(result.error)
+      if (!result.ok) return showApiError(result.error)
       await refresh()
       setReceipt(undefined)
       toast.success('Votre reçu a été transmis à l’administration.')
@@ -370,7 +382,7 @@ export function StudentSchedulePage() {
   }, [refresh])
   async function vote(pollId: string, slotId: string, value: 'Disponible' | 'Si nécessaire' | 'Indisponible') {
     const result = await api.submitScheduleVote(pollId, slotId, value)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
     toast.success('Votre disponibilité a été enregistrée.')
   }
@@ -413,7 +425,7 @@ function SessionCard({ session, conflict, canEnter }: { session: LiveSession; co
       : <form onSubmit={async (event) => {
         event.preventDefault()
         const result = await api.requestGroupReschedule(session.id, reason, proposedDate || undefined, proposedStartTime || undefined)
-        if (!result.ok) return toast.error(result.error)
+        if (!result.ok) return showApiError(result.error)
         setAsking(false)
         setReason('')
         setProposedDate('')
@@ -503,7 +515,7 @@ export function TeacherGroupsPage() {
       monthlyPrice: paymentsEnabled && price.trim() ? Number(price) : null,
       status: 'ouvert aux inscriptions',
     })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setName('')
     setDescription('')
     setPrice('')
@@ -513,7 +525,7 @@ export function TeacherGroupsPage() {
   async function decide(enrollmentId: string, decision: 'accepté' | 'refusé') {
     const reason = decision === 'refusé' ? window.prompt('Motif du refus') ?? '' : ''
     const result = await api.decideGroupEnrollment(enrollmentId, decision, reason)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
     toast.success(decision === 'accepté' ? 'Inscription acceptée.' : 'Demande refusée.')
   }
@@ -548,8 +560,8 @@ export function TeacherGroupsPage() {
           return <article className="group-student-card" key={group.id}>
             <div className="group-card-heading"><div><p className="section-kicker">{group.status} · horaire {group.scheduleStatus}</p><h2>{group.name}</h2></div>
               <div className="group-actions">
-                <button className="button-soft" type="button" onClick={async () => { const result = await api.duplicateClassGroup(group.id); if (!result.ok) toast.error(result.error); else await refresh() }}>Dupliquer</button>
-                <button className="button-soft" type="button" onClick={async () => { const result = await api.updateClassGroup(group.id, { status: group.status === 'fermé' ? 'ouvert aux inscriptions' : 'fermé' }); if (!result.ok) toast.error(result.error); else await refresh() }}>{group.status === 'fermé' ? 'Rouvrir' : 'Fermer'}</button>
+                <button className="button-soft" type="button" onClick={async () => { const result = await api.duplicateClassGroup(group.id); if (!result.ok) showApiError(result.error); else await refresh() }}>Dupliquer</button>
+                <button className="button-soft" type="button" onClick={async () => { const result = await api.updateClassGroup(group.id, { status: group.status === 'fermé' ? 'ouvert aux inscriptions' : 'fermé' }); if (!result.ok) showApiError(result.error); else await refresh() }}>{group.status === 'fermé' ? 'Rouvrir' : 'Fermer'}</button>
               </div></div>
             <p>{group.description}</p>
             {group.monthlyPrice !== null && <p>{group.monthlyPrice > 0 ? `${group.monthlyPrice} TND par mois` : 'Gratuit'}</p>}
@@ -563,12 +575,73 @@ export function TeacherGroupsPage() {
             <ContentLinkForm group={group} modules={ownModules} ownLessons={ownLessons} refresh={refresh}/>
             <GroupContentOrder group={group}/>
             <SchedulePollForm group={group} refresh={refresh}/>
+            <GroupMaterialsPanel group={group}/>
             {groupPolls.map(({ poll }) => <PollResults key={poll.id} poll={poll} refresh={refresh}/>)}
             <GroupAssessments group={group} students={students[group.id] ?? []} refresh={refresh}/>
             <GroupSessionTools group={group} sessions={sessions.filter((session) => session.groupId === group.id)} refresh={refresh}/>
             <AnnouncementForm groupId={group.id} refresh={refresh}/>
           </article>
         })}</div>}
+  </section>
+}
+
+function GroupMaterialsPanel({ group }: { group: ClassGroup }) {
+  const [materials, setMaterials] = useState<GroupMaterial[]>([])
+  const [title, setTitle] = useState('')
+  const [file, setFile] = useState<File>()
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [fileInputKey, setFileInputKey] = useState(0)
+  const refresh = useCallback(async () => {
+    setMaterials(await api.getGroupMaterials(group.id))
+    setLoading(false)
+  }, [group.id])
+  useEffect(() => { void refresh().catch(() => { toast.error('Impossible de charger les ressources du groupe.'); setLoading(false) }) }, [refresh])
+  async function submit(event: React.FormEvent) {
+    event.preventDefault()
+    if (!file) return toast.error('Choisissez un fichier à partager.')
+    setSaving(true)
+    try {
+      const result = await api.addGroupMaterial(group.id, title, file)
+      if (!result.ok) return showApiError(result.error)
+      setTitle('')
+      setFile(undefined)
+      setFileInputKey((current) => current + 1)
+      await refresh()
+      toast.success('La ressource a été ajoutée au groupe.')
+    } catch {
+      toast.error('Impossible d’ajouter cette ressource.')
+    } finally {
+      setSaving(false)
+    }
+  }
+  async function remove(material: GroupMaterial) {
+    if (!window.confirm(`Retirer « ${material.title} » du groupe ?`)) return
+    const result = await api.removeGroupMaterial(material.id)
+    if (!result.ok) return showApiError(result.error)
+    await refresh()
+    toast.success('La ressource a été retirée.')
+  }
+  return <section className="group-subform">
+    <h3>Documents et ressources du groupe</h3>
+    <form className="group-form-grid" onSubmit={(event) => void submit(event)}>
+      <label className="form-field">Titre<input required maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)}/></label>
+      <label className="form-field">Fichier (10 Mo maximum)<input key={fileInputKey} type="file" accept={api.EDUCATIONAL_FILE_ACCEPT}
+        onChange={(event) => setFile(event.target.files?.[0])}/></label>
+      <button className="button-soft" type="submit" disabled={saving}>{saving ? 'Enregistrement…' : 'Partager avec la classe'}</button>
+    </form>
+    {loading ? <p role="status">Chargement des ressources…</p>
+      : materials.length ? <ul className="group-material-list">{materials.map((material) =>
+        <li key={material.id}><span>{material.title} · {material.attachment.name}</span>
+          <div className="group-actions">
+            <button className="button-soft" type="button" onClick={async () => {
+              const result = await api.downloadGroupMaterial(material.id)
+              if (!result.ok) return showApiError(result.error)
+              downloadBlob(result.data.blob, result.data.name)
+            }}>Télécharger</button>
+            <button className="button-soft" type="button" onClick={() => void remove(material)}>Retirer</button>
+          </div>
+        </li>)}</ul> : <p>Aucune ressource dans ce groupe.</p>}
   </section>
 }
 
@@ -589,7 +662,7 @@ function EditGroupForm({ group, paymentsEnabled, refresh, onCancel }: {
       name, description, maxStudents, status,
       ...(paymentsEnabled ? { monthlyPrice: monthlyPrice.trim() ? Number(monthlyPrice) : null } : {}),
     })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
     onCancel()
     toast.success('La classe a été mise à jour.')
@@ -631,9 +704,9 @@ function ContentLinkForm({ group, modules, ownLessons, refresh }: {
   async function link(event: React.FormEvent) {
     event.preventDefault()
     const result = await api.linkGroupModule(group.id, moduleId, selectedLessons)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     const published = await api.setGroupContentPublished(result.data.id, true)
-    if (!published.ok) return toast.error(published.error)
+    if (!published.ok) return showApiError(published.error)
     setSelectedLessons([])
     await refresh()
     toast.success('Le contenu a été publié dans la classe.')
@@ -671,12 +744,12 @@ function GroupContentOrder({ group }: { group: ClassGroup }) {
     next[index] = next[target]
     next[target] = current
     const result = await api.reorderGroupContent(group.id, next.map((item) => item.id))
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setLinks(result.data)
   }
   async function togglePublished(link: GroupContentLink) {
     const result = await api.setGroupContentPublished(link.id, !link.published)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setLinks((current) => current.map((item) => item.id === link.id ? result.data : item))
   }
   if (!links.length) return null
@@ -709,7 +782,7 @@ function SchedulePollForm({ group, refresh }: { group: ClassGroup; refresh: () =
     const result = await api.createSchedulePoll(group.id,
       slots.map((slot, index) => ({ ...slot, id: `slot-${index + 1}` })),
       new Date(deadlineAt).toISOString(), weeks)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await refresh()
     toast.success('Les créneaux ont été proposés aux élèves.')
   }
@@ -739,7 +812,7 @@ function PollResults({ poll, refresh }: { poll: SchedulePoll; refresh: () => Pro
     const selected = selectedSlotIds.length ? selectedSlotIds : results?.suggestion ? [results.suggestion.id] : []
     if (!selected.length) return toast.error('Aucune disponibilité enregistrée.')
     const fixed = await api.fixGroupSchedule(poll.id, selected)
-    if (!fixed.ok) return toast.error(fixed.error)
+    if (!fixed.ok) return showApiError(fixed.error)
     if (fixed.data.conflictWarnings.length) toast('Conflits élèves : ' + fixed.data.conflictWarnings.join(', '))
     await refresh()
     toast.success('Les séances hebdomadaires sont planifiées.')
@@ -778,7 +851,7 @@ function GroupAssessments({ group, students, refresh }: {
     const result = await api.createGroupAssessment({
       groupId: group.id, title, type, date, maxPoints, coefficient, published: true,
     })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setAssessmentId(result.data.id)
     setTitle('')
     await load()
@@ -789,7 +862,7 @@ function GroupAssessments({ group, students, refresh }: {
     const scoreText = scores[studentId] ?? (existing?.score === undefined ? '' : String(existing.score))
     const score = scoreText.trim() ? Number(scoreText) : undefined
     const result = await api.recordStudentGrade(assessmentId, studentId, score, false, reasons[studentId] ?? '')
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     await load()
     await refresh()
     toast.success('La note a été enregistrée.')
@@ -855,7 +928,7 @@ function GroupSessionTools({ group, sessions, refresh }: {
       maxPoints: 20, allowedTypes: ['text' as const],
     } : undefined
     const result = await api.closeGroupSession(closingSession, { attendance: roster, coveredLessonIds, summary, homework })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setClosingSession('')
     await refresh()
     toast.success('La séance a été clôturée.')
@@ -899,7 +972,7 @@ function AnnouncementForm({ groupId, refresh }: { groupId: string; refresh: () =
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     const result = await api.publishGroupAnnouncement(groupId, { title, body, pinned })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setTitle('')
     setBody('')
     await refresh()
@@ -938,12 +1011,12 @@ export function TeacherSchedulePage() {
         </div>
         <button className="button-primary" type="button" onClick={async () => {
           const result = await api.decideGroupRescheduleRequest(request.id, 'accepté')
-          if (!result.ok) return toast.error(result.error)
+          if (!result.ok) return showApiError(result.error)
           await refresh()
         }}>Accepter</button>
         <button className="button-soft" type="button" onClick={async () => {
           const result = await api.decideGroupRescheduleRequest(request.id, 'refusé')
-          if (!result.ok) return toast.error(result.error)
+          if (!result.ok) return showApiError(result.error)
           await refresh()
         }}>Refuser</button>
       </article>) : <p>Aucune demande en attente.</p>}
@@ -961,7 +1034,7 @@ function TeacherSessionCard({ session, refresh }: { session: LiveSession; refres
   const [startTime, setStartTime] = useState(session.startTime)
   async function update(cancel: boolean) {
     const result = await api.rescheduleGroupSession(session.id, { date, startTime, cancel }, reason)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setReason('')
     await refresh()
     toast.success(cancel ? 'La séance a été annulée.' : 'La séance a été déplacée.')
@@ -1007,7 +1080,7 @@ export function AdminGroupsPage() {
   async function saveSection(event: React.FormEvent) {
     event.preventDefault()
     const result = await api.saveSection({ name: sectionName })
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return showApiError(result.error)
     setSectionName('')
     await refresh()
     toast.success('La filière a été créée.')
@@ -1028,12 +1101,12 @@ export function AdminGroupsPage() {
           {payment.receipt && <a className="button-soft" href={payment.receipt} download={`recu-${payment.period}`}>Voir le reçu</a>}
           {payment.status !== 'payé' && <button className="button-primary" type="button" onClick={async () => {
             const result = await api.reviewGroupPayment(payment.id, 'payé')
-            if (!result.ok) return toast.error(result.error)
+            if (!result.ok) return showApiError(result.error)
             await refresh()
           }}>Valider</button>}
           {payment.status === 'en attente' && <button className="button-soft" type="button" onClick={async () => {
             const result = await api.reviewGroupPayment(payment.id, 'en retard')
-            if (!result.ok) return toast.error(result.error)
+            if (!result.ok) return showApiError(result.error)
             await refresh()
           }}>Marquer en retard</button>}
         </article>) : <p>Aucun paiement de classe à traiter.</p>}
@@ -1046,7 +1119,7 @@ export function AdminGroupsPage() {
       {sections.map((section) => <form className="group-section-row" key={section.id} onSubmit={async (event) => {
         event.preventDefault()
         const result = await api.saveSection({ id: section.id, name: editing[section.id] ?? section.name, active: section.active })
-        if (!result.ok) return toast.error(result.error)
+        if (!result.ok) return showApiError(result.error)
         await refresh()
       }}>
         <input aria-label={`Nom de la filière ${section.name}`} value={editing[section.id] ?? section.name}
@@ -1054,7 +1127,7 @@ export function AdminGroupsPage() {
         <span>{section.active ? 'Active' : 'Désactivée'}</span><button className="button-soft">Enregistrer</button>
         <button className="button-soft" type="button" onClick={async () => {
           const result = await api.saveSection({ id: section.id, name: section.name, active: !section.active })
-          if (!result.ok) return toast.error(result.error)
+          if (!result.ok) return showApiError(result.error)
           await refresh()
         }}>{section.active ? 'Désactiver' : 'Réactiver'}</button>
       </form>)}
@@ -1069,7 +1142,7 @@ export function AdminGroupsPage() {
           <span>{stats?.capacityPercent ?? 0}% remplie</span>
           {group.status !== 'fermé' && <button className="button-soft" type="button" onClick={async () => {
             const result = await api.forceCloseClassGroup(group.id)
-            if (!result.ok) return toast.error(result.error)
+            if (!result.ok) return showApiError(result.error)
             await refresh()
           }}>Forcer la fermeture</button>}
         </article>
@@ -1089,7 +1162,7 @@ export function AdminGroupsPage() {
             </select>
             <button className="button-soft" type="button" disabled={!targetGroups[enrollment.id]} onClick={async () => {
               const result = await api.adminMoveStudentToGroup(enrollment.studentId, enrollment.groupId, targetGroups[enrollment.id])
-              if (!result.ok) return toast.error(result.error)
+              if (!result.ok) return showApiError(result.error)
               await refresh()
               toast.success('L’élève a été déplacé.')
             }}>Déplacer</button>

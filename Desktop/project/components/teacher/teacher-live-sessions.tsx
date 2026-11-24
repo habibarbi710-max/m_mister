@@ -4,26 +4,31 @@ import { useEffect, useMemo, useState } from 'react'
 import { useFieldArray, useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { CalendarDays, CircleCheck, CirclePlay, Clock3, ExternalLink, Plus, Radio, Users, X } from 'lucide-react'
+import { CalendarDays, CircleCheck, CirclePlay, Clock3, ExternalLink, FileText, Plus, Radio, Users, X } from 'lucide-react'
 import { toast } from 'sonner'
 import * as api from '@/lib/api'
 import { useAuth } from '@/components/shared/auth-provider'
 import { useLanguage } from '@/components/shared/language-provider'
-import { translateApiError } from '@/components/shared/api-error'
+import { showApiError, translateApiError } from '@/components/shared/api-error'
 import { MAX_STUDENTS_PER_SESSION } from '@/lib/livekit-config'
 import { terminateLiveKitRoom } from '@/lib/livekit-client'
 import { formatLiveSessionDate, liveSessionStart } from '@/lib/live-time'
-import type { LiveQuestion, LiveSession, LiveSessionInput, Subject } from '@/types'
+import type { ClassGroup, LiveQuestion, LiveResource, LiveSession, LiveSessionInput, Subject } from '@/types'
+import { downloadBlob } from '@/components/shared/download-file'
 
-const emptySession = (): LiveSessionInput => ({
+type LiveSessionFormValues = Omit<LiveSessionInput, 'resources'> & {
+  resources: Array<{ title: string; url: string }>
+}
+
+const emptySession = (): LiveSessionFormValues => ({
   title: '',
   description: '',
   subjectId: '',
+  groupId: '',
   date: todayInTunis(),
   startTime: '18:00',
   durationMinutes: 60,
   provider: 'livekit',
-  externalUrl: undefined,
   replayUrl: undefined,
   resources: [],
 })
@@ -38,23 +43,24 @@ export function TeacherLiveSessions({ sessions, refresh }: { sessions: LiveSessi
   const { t } = useLanguage()
   const { user } = useAuth()
   const [subjects, setSubjects] = useState<Subject[]>([])
+  const [groups, setGroups] = useState<ClassGroup[]>([])
   const [editingId, setEditingId] = useState('')
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const [existingAttachments, setExistingAttachments] = useState<LiveResource[]>([])
+  const [fileInputKey, setFileInputKey] = useState(0)
   const schema = useMemo(() => z.object({
     title: z.string().trim().min(2, 'Saisissez un titre (2 caractères minimum).').max(160, 'Le titre est trop long.'),
     description: z.string().max(2000, 'La description est trop longue.'),
     subjectId: z.string().min(1, 'Choisissez une matière.'),
+    groupId: z.string().optional(),
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Choisissez une date valide.').refine((value) => value >= todayInTunis(), 'La date ne peut pas être passée.'),
     startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, 'Choisissez une heure valide.'),
     durationMinutes: z.number().int().min(15, 'La durée minimale est de 15 minutes.').max(240, 'La durée maximale est de 240 minutes.'),
-    provider: z.enum(['livekit', 'external']),
-    externalUrl: z.union([z.string().url('Saisissez une URL valide.'), z.literal('')]).optional(),
+    provider: z.literal('livekit'),
     replayUrl: z.union([z.string().url('Saisissez une URL valide.'), z.literal('')]).optional(),
     resources: z.array(z.object({ title: z.string().trim().min(1, 'Saisissez un titre.'), url: z.string().url('Saisissez une URL valide.') })).max(30),
   }).superRefine((values, context) => {
-    if (values.provider === 'external' && !values.externalUrl) {
-      context.addIssue({ code: 'custom', path: ['externalUrl'], message: 'Le lien Meet ou Zoom est obligatoire.' })
-    }
-    for (const [field, url] of [['externalUrl', values.externalUrl], ['replayUrl', values.replayUrl]] as const) {
+    for (const [field, url] of [['replayUrl', values.replayUrl]] as const) {
     if (url) {
       try {
         if (!['http:', 'https:'].includes(new URL(url).protocol)) throw new Error('protocol')
@@ -64,49 +70,61 @@ export function TeacherLiveSessions({ sessions, refresh }: { sessions: LiveSessi
     }
     }
   }), [])
-  const { register, control, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<LiveSessionInput>({
+  const { register, control, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<LiveSessionFormValues>({
     resolver: zodResolver(schema),
     defaultValues: emptySession(),
   })
   const resourceFields = useFieldArray({ control, name: 'resources' })
-  const provider = useWatch({ control, name: 'provider' })
+  const subjectId = useWatch({ control, name: 'subjectId' })
   const durationMinutes = useWatch({ control, name: 'durationMinutes' })
   useEffect(() => {
-    void api.getSubjects().then(setSubjects).catch(() => toast.error(t('unknownError')))
+    void Promise.all([api.getSubjects(), api.listClassGroups()])
+      .then(([subjectRows, groupRows]) => { setSubjects(subjectRows); setGroups(groupRows) })
+      .catch(() => toast.error(t('unknownError')))
   }, [t])
 
   function edit(session: LiveSession) {
     setEditingId(session.id)
+    setSelectedFiles([])
+    setFileInputKey((current) => current + 1)
+    setExistingAttachments(session.resources.filter((resource) => resource.attachment))
     reset({
       title: session.title,
       description: session.description,
       subjectId: session.subjectId,
+      groupId: session.groupId ?? '',
       date: session.date,
       startTime: session.startTime,
       durationMinutes: session.durationMinutes,
-      provider: session.provider,
-      externalUrl: session.externalUrl ?? '',
+      provider: 'livekit',
       replayUrl: session.replayUrl ?? '',
-      resources: session.resources,
+      resources: session.resources.filter((resource) => resource.url).map((resource) => ({
+        title: resource.title,
+        url: resource.url!,
+      })),
     })
   }
 
   function clearForm() {
     setEditingId('')
+    setSelectedFiles([])
+    setExistingAttachments([])
+    setFileInputKey((current) => current + 1)
     reset(emptySession())
   }
 
-  async function submit(values: LiveSessionInput) {
+  async function submit(values: LiveSessionFormValues) {
     const clean = {
       ...values,
-      externalUrl: values.provider === 'external' ? values.externalUrl : undefined,
+      groupId: values.groupId || undefined,
       replayUrl: values.replayUrl || undefined,
+      resources: [...values.resources, ...existingAttachments],
     }
     const result = editingId
-      ? await api.updateLiveSession(editingId, clean)
+      ? await api.updateLiveSessionWithFiles(editingId, clean, selectedFiles)
       : repeating
-        ? await api.createWeeklyLiveSessions(clean, 8)
-        : await api.createLiveSession(clean)
+        ? await api.createWeeklyLiveSessionsWithFiles(clean, 8, selectedFiles)
+        : await api.createLiveSessionWithFiles(clean, selectedFiles)
     if (!result.ok) return toast.error(translateApiError(result.error, t))
     clearForm()
     await refresh()
@@ -120,7 +138,7 @@ export function TeacherLiveSessions({ sessions, refresh }: { sessions: LiveSessi
       && session.provider === 'livekit' && user?.role === 'teacher') {
       const ended = await terminateLiveKitRoom(session, user)
       if (!ended.ok) {
-        toast.error(ended.error)
+        toast.error(translateApiError(ended.error, t))
         return
       }
     }
@@ -137,7 +155,7 @@ export function TeacherLiveSessions({ sessions, refresh }: { sessions: LiveSessi
 
   const sortedSessions = [...sessions].sort((a, b) => b.date.localeCompare(a.date) || b.startTime.localeCompare(a.startTime))
   return <section id="sessions" className="live-management">
-    <header className="live-management-heading"><div><p className="section-kicker">Gestion des séances</p><h2>{t('sessions')}</h2><p>Créez une salle LiveKit ou ajoutez un lien Meet / Zoom.</p></div></header>
+    <header className="live-management-heading"><div><p className="section-kicker">Gestion des séances</p><h2>{t('sessions')}</h2><p>Programmez et animez vos directs directement sur Learn With Me.</p></div></header>
     <form className="live-session-form" onSubmit={handleSubmit(submit)} noValidate>
       <div className="live-form-heading"><h3>{editingId ? 'Modifier la séance' : 'Programmer une séance'}</h3>{editingId && <button className="icon-button" type="button" aria-label="Fermer la modification" onClick={clearForm}><X aria-hidden="true"/></button>}</div>
       <Field label={t('title')} error={errors.title?.message}><input {...register('title')} /></Field>
@@ -148,11 +166,28 @@ export function TeacherLiveSessions({ sessions, refresh }: { sessions: LiveSessi
         <Field label={t('time')} error={errors.startTime?.message}><input type="time" {...register('startTime')} /></Field>
         <Field label="Durée (minutes)" error={errors.durationMinutes?.message}><input type="number" min={15} max={240} step={15} {...register('durationMinutes', { valueAsNumber: true })} /></Field>
       </div>
-      <Field label="Type de salle" error={errors.provider?.message}><select {...register('provider')}><option value="livekit">Salle LiveKit intégrée</option><option value="external">Lien externe Meet / Zoom</option></select></Field>
-      {provider === 'external' && <Field label="Lien externe" error={errors.externalUrl?.message}><input type="url" placeholder="https://" {...register('externalUrl')} /></Field>}
+      <Field label="Classe concernée" error={errors.groupId?.message}><select {...register('groupId')} disabled={!subjectId}><option value="">{!subjectId ? 'Choisissez d’abord une matière' : 'Séance plateforme (sans classe)'}</option>{groups.filter((group) => group.subjectId === subjectId).map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select></Field>
       {editingId && <Field label="Lien du replay" error={errors.replayUrl?.message}><input type="url" placeholder="https://" {...register('replayUrl')} /></Field>}
       <section className="live-resource-editor"><div className="live-inline-heading"><h4>Ressources</h4><button type="button" className="button-soft" onClick={() => resourceFields.append({ title: '', url: '' })}><Plus aria-hidden="true"/> Ajouter un lien</button></div>
-        {resourceFields.fields.map((field, index) => <div className="live-resource-fields" key={field.id}><Field label="Titre"><input {...register(`resources.${index}.title`)} /></Field><Field label="Lien ou PDF"><input type="url" placeholder="https://" {...register(`resources.${index}.url`)} /></Field><button className="icon-button" type="button" aria-label="Retirer la ressource" onClick={() => resourceFields.remove(index)}><X aria-hidden="true"/></button></div>)}
+        {resourceFields.fields.map((field, index) => <div className="live-resource-fields" key={field.id}><Field label="Titre"><input {...register(`resources.${index}.title`)} /></Field><Field label="Lien web"><input type="url" placeholder="https://" {...register(`resources.${index}.url`)} /></Field><button className="icon-button" type="button" aria-label="Retirer la ressource" onClick={() => resourceFields.remove(index)}><X aria-hidden="true"/></button></div>)}
+        <Field label="Ajouter des fichiers (10 Mo maximum par fichier)">
+          <input key={fileInputKey} type="file" accept={api.EDUCATIONAL_FILE_ACCEPT} multiple onChange={(event) => {
+            const additions = Array.from(event.target.files ?? [])
+            setSelectedFiles((current) => [
+              ...current,
+              ...additions.filter((file) => !current.some((item) => item.name === file.name && item.size === file.size)),
+            ])
+          }}/>
+        </Field>
+        {existingAttachments.map((resource) => <div className="live-resource-file" key={resource.attachment?.storageId}>
+          <span><FileText aria-hidden="true"/> {resource.attachment?.name}</span>
+        </div>)}
+        {selectedFiles.map((file, index) => <div className="live-resource-file" key={`${file.name}-${file.size}-${index}`}>
+          <span><FileText aria-hidden="true"/> {file.name} · {(file.size / (1024 * 1024)).toFixed(1)} Mo</span>
+          <button className="icon-button" type="button" aria-label={`Retirer ${file.name}`}
+            onClick={() => setSelectedFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))}><X aria-hidden="true"/></button>
+        </div>)}
+        <p className="live-usage-hint">PDF, documents, images, audio, vidéo et ZIP. Les exécutables et scripts ne sont pas acceptés.</p>
       </section>
       {!editingId && <label className="live-repeat-option"><input type="checkbox" checked={repeating} onChange={(event) => setRepeating(event.target.checked)}/><span>Répéter chaque semaine pendant 8 séances</span></label>}
       <p className="live-usage-hint"><Clock3 aria-hidden="true"/> Coût estimé au maximum : {durationMinutes} min × {MAX_STUDENTS_PER_SESSION} élèves = {durationMinutes * MAX_STUDENTS_PER_SESSION} minutes-participant.</p>
@@ -203,9 +238,17 @@ function ManagedSession({ session, edit, changeStatus, canManage }: {
 
   return <article className="managed-live-card">
     <div className="managed-live-main"><div className="managed-live-meta"><span className={`live-status-badge live-status-${session.status}`}>{session.status === 'live' ? 'EN DIRECT' : statusLabel(session.status)}</span><span className="session-date"><CalendarDays aria-hidden="true"/>{formatLiveSessionDate(session)}</span></div>
-      <h4>{session.title}</h4><p>{session.description || 'Aucune description.'}</p><p><Clock3 aria-hidden="true"/> {session.durationMinutes} min · {session.provider === 'livekit' ? 'Salle LiveKit' : 'Lien externe'} · <Users aria-hidden="true"/> {attendance} participant{attendance === 1 ? '' : 's'}</p>
+      <h4>{session.title}</h4><p>{session.description || 'Aucune description.'}</p><p><Clock3 aria-hidden="true"/> {session.durationMinutes} min · Salle intégrée · <Users aria-hidden="true"/> {attendance} participant{attendance === 1 ? '' : 's'}</p>
       {session.replayUrl && <a className="managed-replay-link" href={session.replayUrl} target="_blank" rel="noreferrer"><CirclePlay aria-hidden="true"/> Voir le replay <ExternalLink aria-hidden="true"/></a>}
-      {session.resources.length > 0 && <ul className="managed-resource-list">{session.resources.map((resource) => <li key={`${resource.title}-${resource.url}`}><a href={resource.url} target="_blank" rel="noreferrer">{resource.title} <ExternalLink aria-hidden="true"/></a></li>)}</ul>}
+      {session.resources.length > 0 && <ul className="managed-resource-list">{session.resources.map((resource) => <li key={`${resource.title}-${resource.attachment?.storageId ?? resource.url}`}>
+        {resource.url ? <a href={resource.url} target="_blank" rel="noreferrer">{resource.title} <ExternalLink aria-hidden="true"/></a>
+          : <button className="button-soft" type="button" onClick={async () => {
+            if (!resource.attachment) return
+            const result = await api.downloadLiveAttachment(session.id, resource.attachment.storageId)
+            if (!result.ok) return showApiError(result.error)
+            downloadBlob(result.data.blob, result.data.name)
+          }}>{resource.title} · Télécharger</button>}
+      </li>)}</ul>}
       <div className="managed-live-actions">
         {canManage && session.status === 'scheduled' && canStart && <button className="button-primary" type="button" onClick={() => void changeStatus(session, 'live')}><Radio aria-hidden="true"/> Démarrer le live</button>}
         {canManage && session.status === 'scheduled' && !canStart && <span className="live-usage-hint">La salle ouvre 15 minutes avant le début.</span>}

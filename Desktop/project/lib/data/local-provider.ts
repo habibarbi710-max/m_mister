@@ -489,6 +489,19 @@ const schemas: Partial<Record<keyof import('@/lib/data/provider').DataTables, z.
     id: z.string().min(1), groupId: z.string().min(1), teacherId: z.string().min(1),
     title: z.string().trim().min(1), body: z.string(), pinned: z.boolean(), createdAt: z.string(), hidden: z.boolean().optional(),
   })),
+  groupMaterials: z.array(z.object({
+    id: z.string().min(1),
+    groupId: z.string().min(1),
+    teacherId: z.string().min(1),
+    title: z.string().trim().min(1).max(120),
+    attachment: z.object({
+      storageId: z.string().min(1),
+      name: z.string().min(1).max(255),
+      mimeType: z.string().max(120),
+      size: z.number().int().positive().max(10 * 1024 * 1024),
+    }),
+    createdAt: z.string().datetime(),
+  })),
   theme: z.enum(['light', 'dark']),
 }
 
@@ -537,6 +550,7 @@ function defaultValue(key: DataKey): unknown {
   if (key === 'gradeAuditLog') return demoGradeAuditLog
   if (key === 'groupPayments') return demoGroupPayments
   if (key === 'groupAnnouncements') return demoGroupAnnouncements
+  if (key === 'groupMaterials') return []
   if (key === 'liveSessions') return demoLiveSessions
   if (key === 'accounts') return []
   if (key === 'lang') return 'fr'
@@ -563,7 +577,8 @@ function storageKey(key: DataKey): string {
     || key === 'groupEnrollments' || key === 'groupContentLinks' || key === 'schedulePolls'
     || key === 'schedulePollVotes' || key === 'groupRescheduleRequests' || key === 'groupAttendance'
     || key === 'classLogEntries' || key === 'groupAssessments' || key === 'studentGrades'
-    || key === 'gradeAuditLog' || key === 'groupPayments' || key === 'groupAnnouncements') {
+    || key === 'gradeAuditLog' || key === 'groupPayments' || key === 'groupAnnouncements'
+    || key === 'groupMaterials') {
     return `edubac:v3:${key}`
   }
   return `edubac:${key}`
@@ -571,6 +586,69 @@ function storageKey(key: DataKey): string {
 
 function legacyStorageKey(key: DataKey): string {
   return `edubac:${key}`
+}
+
+const attachmentDatabaseName = 'edubac-attachments'
+const attachmentStoreName = 'files'
+
+function openAttachmentDatabase(): Promise<IDBDatabase> {
+  if (typeof indexedDB === 'undefined') return Promise.reject(new Error('IndexedDB indisponible'))
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(attachmentDatabaseName, 1)
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(attachmentStoreName)) {
+        request.result.createObjectStore(attachmentStoreName)
+      }
+    }
+    request.onsuccess = () => {
+      request.result.onversionchange = () => request.result.close()
+      resolve(request.result)
+    }
+    request.onerror = () => reject(request.error ?? new Error('Ouverture du stockage de fichiers impossible'))
+    request.onblocked = () => reject(new Error('Le stockage de fichiers est bloqué par un autre onglet'))
+  })
+}
+
+async function runAttachmentTransaction<T>(
+  mode: IDBTransactionMode,
+  operation: (store: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
+  const database = await openAttachmentDatabase()
+  return new Promise((resolve, reject) => {
+    let result: T
+    let failed = false
+    try {
+      const transaction = database.transaction(attachmentStoreName, mode)
+      const request = operation(transaction.objectStore(attachmentStoreName))
+      request.onsuccess = () => { result = request.result }
+      request.onerror = () => {
+        failed = true
+        database.close()
+        reject(request.error ?? new Error('Opération de stockage impossible'))
+      }
+      transaction.oncomplete = () => {
+        database.close()
+        if (!failed) resolve(result)
+      }
+      transaction.onerror = () => {
+        failed = true
+        database.close()
+        reject(transaction.error ?? new Error('Transaction de stockage impossible'))
+      }
+      transaction.onabort = () => {
+        failed = true
+        database.close()
+        reject(transaction.error ?? new Error('Transaction de stockage annulée'))
+      }
+    } catch (error) {
+      database.close()
+      reject(error)
+    }
+  })
+}
+
+function attachmentStorageError(code: 'storage-unavailable' | 'persistence-failed', message: string) {
+  return { ok: false as const, error: { code, message } }
 }
 
 export const localProvider: DataProvider = {
@@ -623,11 +701,59 @@ export const localProvider: DataProvider = {
     }
   },
 
+  async readAttachment(id: string): Promise<DataResult<Blob | undefined>> {
+    try {
+      const value = await runAttachmentTransaction<Blob | undefined>('readonly', (store) => store.get(id))
+      return { ok: true, data: value }
+    } catch {
+      return attachmentStorageError(
+        typeof indexedDB === 'undefined' ? 'storage-unavailable' : 'persistence-failed',
+        'Impossible de lire le fichier stocké.',
+      )
+    }
+  },
+
+  async writeAttachment(id: string, value: Blob): Promise<DataResult<void>> {
+    try {
+      await runAttachmentTransaction('readwrite', (store) => store.put(value, id))
+      return { ok: true, data: undefined }
+    } catch {
+      return attachmentStorageError(
+        typeof indexedDB === 'undefined' ? 'storage-unavailable' : 'persistence-failed',
+        'Impossible d’enregistrer le fichier. Vérifiez l’espace de stockage disponible.',
+      )
+    }
+  },
+
+  async deleteAttachment(id: string): Promise<DataResult<void>> {
+    try {
+      await runAttachmentTransaction('readwrite', (store) => store.delete(id))
+      return { ok: true, data: undefined }
+    } catch {
+      return attachmentStorageError(
+        typeof indexedDB === 'undefined' ? 'storage-unavailable' : 'persistence-failed',
+        'Impossible de supprimer le fichier stocké.',
+      )
+    }
+  },
+
+  async clearAttachments(): Promise<DataResult<void>> {
+    if (typeof indexedDB === 'undefined') return { ok: true, data: undefined }
+    try {
+      await runAttachmentTransaction('readwrite', (store) => store.clear())
+      return { ok: true, data: undefined }
+    } catch {
+      return attachmentStorageError('persistence-failed', 'Impossible de supprimer les fichiers de démonstration.')
+    }
+  },
+
   async reset(): Promise<DataResult<void>> {
     if (typeof window === 'undefined') {
       return { ok: false, error: { code: 'storage-unavailable', message: 'Le stockage local est indisponible.' } }
     }
     try {
+      const clearedFiles = await localProvider.clearAttachments()
+      if (!clearedFiles.ok) return { ok: false, error: { code: 'reset-failed', message: clearedFiles.error.message } }
       const keys = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))
         .filter((key): key is string => key?.startsWith('edubac:') === true)
       for (const key of keys) window.localStorage.removeItem(key)

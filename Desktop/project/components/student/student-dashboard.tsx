@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { BookOpenCheck, ChartNoAxesColumnIncreasing, ClipboardCheck, ShieldCheck, Users } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import * as api from '@/lib/api'
-import type { Lesson, LiveSession, QuizResult, Subscription, Subject, User } from '@/types'
+import type { LiveSession, QuizResult, Subscription, Subject, User } from '@/types'
 import { useLanguage } from '@/components/shared/language-provider'
 import { formatLiveSessionDate, liveSessionStart } from '@/lib/live-time'
 

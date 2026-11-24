@@ -20,9 +20,9 @@ npm test
 npm run build
 ```
 
-## Demo accounts
+## Demo accounts (repli local uniquement)
 
-Passwords are hashed locally with PBKDF2-SHA256 and stored in `edubac:accounts`.
+Ces comptes sont disponibles uniquement lorsque Supabase n’est pas configuré. Les mots de passe de démonstration sont hachés localement avec PBKDF2-SHA256 et enregistrés dans `edubac:accounts`.
 
 | Role | Email | Password |
 |---|---|---|
@@ -42,7 +42,6 @@ components/
   teacher/              Teacher feature components
   admin/                Admin feature components
   shared/               Providers and shared components
-  ui/                   Base UI components
 lib/
   api.ts                Business rules and UI-facing data operations
   data/
@@ -54,9 +53,27 @@ lib/
 types/                  Shared domain types
 ```
 
-Components call `lib/api.ts`; it enforces ownership, access and subscription rules before using the configured data provider. `lib/data/local-provider.ts` is the only module that directly reads/writes browser `localStorage`. Authentication is temporary and browser-local.
+Les composants passent par `lib/api.ts`. Sans configuration Supabase, l’authentification de démonstration et les données utilisent le fournisseur local. Avec Supabase configuré, l’authentification, les profils et les filières utilisent Supabase Auth/Postgres; les autres données de l’application restent locales pour le moment. `lib/data/config.ts` sélectionne encore `localProvider`.
 
-To connect Supabase, implement the `DataProvider` contract in `lib/data/supabase-provider.ts`, then select it in `lib/data/config.ts`. Keep business rules in `lib/api.ts`; do not add storage access to components. The current provider uses typed table keys and async results, while some UI-facing API operations still use legacy raw-value/throwing contracts and should be standardized as part of backend integration.
+La règle d’accès métier reste dans `lib/api.ts`; les composants ne doivent accéder directement ni à Supabase ni au stockage local. Les opérations Supabase d’identité et de filières sont regroupées dans cette API. L’adaptateur `DataProvider` complet pour les classes, cours, devoirs, paiements et séances reste à implémenter avant de considérer les données métier migrées.
+
+## Supabase : état et configuration
+
+Les migrations `supabase/migrations/20261124163000_secure_identity_foundation.sql` et `supabase/migrations/20261124170000_fix_public_sections_policy.sql` ont été exécutées sur le projet Supabase relié à cet environnement. Vérification dans le projet : les tables `sections`, `profiles` et `profile_private` existent avec RLS activé; les 7 filières sont présentes; l’endpoint public des filières répond avec succès. Pour un autre projet, exécutez les migrations dans l’ordre chronologique depuis le SQL Editor Supabase.
+
+Copiez `.env.example` vers `.env.local`, puis renseignez `NEXT_PUBLIC_SUPABASE_URL` et `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. La clé publiable peut être exposée au navigateur; n’utilisez jamais la clé `service_role` dans `NEXT_PUBLIC_*` ni dans le code client.
+
+Configurez l’URL du site et la liste des redirections d’authentification dans Supabase (par exemple `http://localhost:3000/login` en développement et l’URL de production). L’inscription crée toujours un compte élève et son profil; si la confirmation Supabase est activée, l’interface demande de confirmer le compte avant la connexion. La connexion par téléphone nécessite également un fournisseur SMS activé dans Supabase; elle n’a pas été vérifiée ici.
+
+Les numéros de téléphone sont conservés dans `profile_private`, séparés du profil public et lisibles par leur propriétaire ou un administrateur via les politiques RLS. Un premier administrateur doit être promu depuis le SQL Editor après sa création dans Auth, par exemple :
+
+```sql
+update public.profiles
+set role = 'admin'
+where id = (select id from auth.users where email = 'admin@example.tn');
+```
+
+La création sécurisée de comptes enseignants depuis l’interface d’administration nécessite encore une fonction serveur privilégiée; elle est donc désactivée en mode Supabase. Le proxy renouvelle les cookies de session, mais ne remplace pas encore les contrôles d’accès serveur pour toutes les routes.
 
 ## Teacher-led classes
 
@@ -80,7 +97,7 @@ Group records, enrollments, content links, slot polls/votes, live sessions, atte
 
 **Payments are optional and off by default.** With `paymentsEnabled: false`, classes are free, prices are hidden in student/teacher-facing API results and private content is gated only by accepted enrollment. When enabled, group billing requires a paid monthly period; the previous month remains valid during the configured grace period. `pricingScope` is currently restricted to `group`; `subscriptionScope` is restricted to `platform`. Other scopes are reserved for later and are rejected rather than simulated.
 
-All UI data operations go through `lib/api.ts`, which applies role, ownership, enrollment and billing checks before using the `DataProvider`. For a real database, implement the group-related `DataTables` in `lib/data/provider.ts` in the selected backend provider and keep these rules in `lib/api.ts`. Replace browser-local auth with verified server sessions and enforce the same permissions in database policies; localStorage role checks are not a security boundary. Payments remain manual and should be connected to a server-side payment provider only after pricing is decided.
+Les opérations UI passent par `lib/api.ts`, qui applique les règles métier avant le stockage. Les contrôles des classes, inscriptions, contenus, paiements et rôles métier utilisent encore les données locales et ne constituent pas une frontière de sécurité. Le schéma Supabase actuel ne couvre que l’identité et les filières; il faut encore créer des tables relationnelles et des politiques RLS pour les données métier avant de les migrer. Les paiements restent manuels et désactivés par défaut.
 
 ## Curriculum ownership and videos
 
@@ -98,7 +115,11 @@ In development, administrators can use **Réinitialiser les données de démonst
 
 ## Live
 
-The live experience uses LiveKit for integrated audio/video rooms. Session metadata, questions, votes, and attendance are currently stored in browser `localStorage` through `lib/data/local-provider.ts`, called by business-rule operations in `lib/api.ts`. External Meet/Zoom sessions open from the same in-platform room page and retain the questions/resources panel.
+Live sessions take place inside Learn With Me using LiveKit audio/video rooms; teachers do not create or share Teams links. Teachers schedule and start sessions from their dashboard, and students join `/live/[id]`. Session questions and links/files are shown in the in-platform side panel. Group sessions are visible only to accepted students with payment access when payments are enabled. Legacy external meeting links are discarded during migration and converted to in-platform sessions.
+
+The local prototype stores session metadata and group-material metadata through `lib/api.ts` and `DataProvider`. Binary resources (PDFs, Office documents, images, audio/video, text, and ZIP files; 10 MB maximum each) are stored in IndexedDB by the local provider rather than `localStorage`. Executables and active script formats are rejected. The database adapter should replace `DataProvider` attachment methods with private object storage and signed, authorization-checked downloads.
+
+Local role/enrollment checks are application logic only: browser storage can be edited. Do not treat the current prototype as secure authorization.
 
 The LiveKit packages are `livekit-client`, `@livekit/components-react`, `@livekit/components-styles`, and `livekit-server-sdk`. Copy `.env.example` to `.env.local` and set:
 
@@ -111,15 +132,15 @@ NEXT_PUBLIC_LIVEKIT_URL=wss://your-project.livekit.cloud
 
 Create a free project in [LiveKit Cloud](https://cloud.livekit.io/), then copy the project URL and server API credentials from its project settings. Keep `LIVEKIT_API_SECRET` server-only: never prefix it with `NEXT_PUBLIC_` or expose it to browser code. `LIVEKIT_URL` is used by server-side room administration; `NEXT_PUBLIC_LIVEKIT_URL` is the secure WebSocket URL sent to the room client.
 
-Start the app with `npm run dev` and configure LiveKit before trying to join a room. A true two-browser teacher/student test is **not possible with the current localStorage-only data layer**: each browser profile has separate users, sessions, and subscriptions, so a teacher-created session is not visible to the student profile. The UI can be exercised with a teacher demo account, but real two-participant media, questions, hand raise, and speaking-permission flows must wait until both clients use shared server-side session and database data. After that connection, use two separate browser profiles (teacher in one, subscribed student in the other), create/start a LiveKit session as the teacher, and test the room controls and interaction panel from each browser.
+Start the app with `npm run dev` and configure LiveKit before trying to join a room. LiveKit provides the real-time media transport; students and teachers stay in the Learn With Me interface. The local browser data layer does not synchronize users, sessions, questions, or subscriptions between profiles, so a complete two-profile class session requires shared server-side data.
 
-**Prototype security limitation:** the current account and subscription live in browser `localStorage`, so a route handler cannot securely verify identity, ownership, or subscription. `verifyLiveAccess` deliberately refuses token issuance in production rather than trusting those client claims. The permission route also refuses production requests. Before public launch, replace the checks in `lib/livekit-access.ts` and both `app/api/live/*/route.ts` handlers with verified server sessions and database-backed user, ownership, and subscription lookups. Do not treat the current client-side checks as authorization.
+**Limite de sécurité du prototype :** lorsque Supabase est configuré, l’identité passe par Supabase Auth, mais les inscriptions, abonnements et permissions LiveKit ne sont pas encore migrés. `verifyLiveAccess` refuse volontairement l’émission de jetons en production tant que l’accès n’est pas vérifié côté serveur. Les contrôles d’accès des routes restent incomplets; ne déployez pas les fonctions métier comme autorisation sécurisée avant leur migration vers des vérifications serveur et RLS.
 
 The initial capacity limit is `MAX_STUDENTS_PER_SESSION = 30` in `lib/livekit-config.ts`. The teacher session form shows the estimated participant-minutes at this limit; token issuance rejects extra students.
 
-## Connecting a real database
+## Données métier restant à migrer
 
-Implement `DataProvider` in **`lib/data/supabase-provider.ts`**, then change the active provider in **`lib/data/config.ts`**. The provider handles these typed records through asynchronous `read`, `write`, and `reset` operations:
+Le `DataProvider` actif est encore `localProvider` dans **`lib/data/config.ts`**. Avant de le remplacer, créer un adaptateur Supabase relationnel couvrant au minimum les données suivantes, avec une politique RLS par table :
 
 - Accounts, current user, users, sections, class groups, enrollments and language/theme preferences
 - Subjects (with modules and embedded lesson/exercise/quiz metadata), lessons, lesson drafts, deleted lesson IDs, content trash, exams, and settings
@@ -128,12 +149,13 @@ Implement `DataProvider` in **`lib/data/supabase-provider.ts`**, then change the
 - Platform and per-group payments/subscriptions
 - Group content links, schedule polls/votes, reschedule requests, attendance, class logs, assessments, grades and audit entries
 - Live sessions, questions, and attendance
+- Group-material metadata; attachment bytes through `readAttachment`, `writeAttachment`, `deleteAttachment`, and `clearAttachments`
 - Lesson view counts, teacher subject assignments, and notifications
 
-Keep permissions, subscription gates, and ownership checks in `lib/api.ts`; UI components should continue calling that API and must not access the provider or storage directly. If database-specific queries require changes to `lib/api.ts`, preserve these business rules and cover the changed operations with tests. API methods still have a mix of raw-value and `ApiResult` contracts; standardize those before treating the adapter as production-ready.
+Garder les règles d’accès dans `lib/api.ts`; les composants doivent continuer à utiliser cette API et ne pas accéder directement au stockage. Toute migration doit préserver les règles de confidentialité et être couverte par des tests d’intégration RLS. Les méthodes API ont encore des contrats de retour hétérogènes.
 
-`lib/auth.ts` currently hashes passwords with PBKDF2 and verifies them against these local credentials. Replace it with server-side sessions and password verification when adding the backend. The current route guard is client-side only; add server-side authorization and user-scoped database policies before deploying.
+`lib/auth.ts` utilise Supabase Auth si les variables publiques sont présentes; PBKDF2 ne sert qu’au repli local de démonstration. Les routes ont encore des gardes côté client; ajouter les contrôles de rôle serveur avant déploiement.
 
 ## Current limitations
 
-This is intentionally frontend-only: there is no database, real payment gateway, hosted lesson-video service, or server-side authorization. Group data, payments, subscriptions, progress and teacher-created content are stored in browser `localStorage`; payment receipts and uploaded PDFs are stored as data URLs. The built-in lessons are sample text and have no videos or PDFs. LiveKit requires a configured project and is disabled for production token issuance until server authentication is connected. Do not use the client-side role checks as a security boundary.
+Supabase est connecté uniquement pour Auth, les profils et les filières; groupes, cours, devoirs, paiements, progression et séances restent dans `localStorage`/IndexedDB. Il n’y a pas de paiement en ligne ni d’autorisation complète côté serveur. Les reçus et devoirs sont encore des data URLs; les ressources de groupe/en direct utilisent IndexedDB. Les leçons intégrées sont des exemples sans vidéos ni PDF. LiveKit est configuré séparément et la production refuse les jetons tant que l’autorisation serveur n’est pas achevée. Les vérifications de rôle côté client ne sont pas une frontière de sécurité.

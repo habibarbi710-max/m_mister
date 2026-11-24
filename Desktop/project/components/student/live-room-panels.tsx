@@ -4,10 +4,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
-import { ExternalLink, FileText, MessageCircleQuestion, ThumbsUp } from 'lucide-react'
+import { Download, ExternalLink, FileText, MessageCircleQuestion, ThumbsUp } from 'lucide-react'
 import { toast } from 'sonner'
 import * as api from '@/lib/api'
 import { useLanguage } from '@/components/shared/language-provider'
+import { showApiError, translateApiError } from '@/components/shared/api-error'
+import { downloadBlob } from '@/components/shared/download-file'
 import type { LiveQuestion, LiveSession, User } from '@/types'
 
 type PanelTab = 'questions' | 'resources'
@@ -43,20 +45,20 @@ export function LiveRoomPanels({ session, user, active }: { session: LiveSession
 
   async function submit(values: { text: string }) {
     const result = await api.createLiveQuestion(session.id, values.text)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return toast.error(translateApiError(result.error, t))
     reset()
     await refreshQuestions()
   }
 
   async function vote(question: LiveQuestion) {
     const result = await api.voteLiveQuestion(question.id)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return toast.error(translateApiError(result.error, t))
     setQuestions((current) => current.map((item) => item.id === question.id ? result.data : item))
   }
 
   async function answer(questionId: string) {
     const result = await api.markLiveQuestionAnswered(questionId)
-    if (!result.ok) return toast.error(result.error)
+    if (!result.ok) return toast.error(translateApiError(result.error, t))
     setQuestions((current) => current.map((item) => item.id === questionId ? result.data : item))
   }
 
@@ -87,7 +89,15 @@ export function LiveRoomPanels({ session, user, active }: { session: LiveSession
       </div>
     </section> : <section className="live-panel-content" role="tabpanel">
       {session.resources.length === 0 ? <p className="live-panel-empty">Aucune ressource n’a été ajoutée à cette séance.</p>
-        : <ul className="live-resources-list">{session.resources.map((resource) => <li key={`${resource.title}-${resource.url}`}><a href={resource.url} target="_blank" rel="noreferrer"><FileText aria-hidden="true"/><span>{resource.title}</span><ExternalLink aria-hidden="true"/></a></li>)}</ul>}
+        : <ul className="live-resources-list">{session.resources.map((resource) => <li key={`${resource.title}-${resource.attachment?.storageId ?? resource.url}`}>
+          {resource.url ? <a href={resource.url} target="_blank" rel="noreferrer"><FileText aria-hidden="true"/><span>{resource.title}</span><ExternalLink aria-hidden="true"/></a>
+            : <button type="button" className="live-resource-download" onClick={async () => {
+              if (!resource.attachment) return
+              const result = await api.downloadLiveAttachment(session.id, resource.attachment.storageId)
+              if (!result.ok) return showApiError(result.error)
+              downloadBlob(result.data.blob, result.data.name)
+            }}><FileText aria-hidden="true"/><span>{resource.title}</span><Download aria-hidden="true"/></button>}
+        </li>)}</ul>}
     </section>}
   </aside>
 }

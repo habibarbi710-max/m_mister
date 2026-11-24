@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import * as api from '@/lib/api'
 import { useAuth } from '@/components/shared/auth-provider'
 import { useLanguage } from '@/components/shared/language-provider'
+import { translateApiError } from '@/components/shared/api-error'
 import { LiveRoomClient } from '@/components/student/live-room-client'
 import { LiveRoomPanels } from '@/components/student/live-room-panels'
 import { terminateLiveKitRoom } from '@/lib/livekit-client'
@@ -25,7 +26,10 @@ export function LiveRoomPage({ id }: { id: string }) {
     let active = true
     async function load() {
       try {
-        const [liveSession, access] = await Promise.all([api.getLiveSession(id), api.canJoinLiveSession(id)])
+        const [liveSession, access] = await Promise.all([
+          api.getLiveSession(id),
+          api.getContentAccess({ type: 'live-session', sessionId: id }),
+        ])
         if (!active) return
         setSession(liveSession)
         setCanAccessRoom(access)
@@ -45,13 +49,13 @@ export function LiveRoomPage({ id }: { id: string }) {
     if (status === 'ended' && session.provider === 'livekit' && user?.role === 'teacher') {
       const ended = await terminateLiveKitRoom(session, user)
       if (!ended.ok) {
-        toast.error(ended.error)
+        toast.error(translateApiError(ended.error, t))
         return
       }
     }
     const result = await api.setLiveSessionStatus(session.id, status)
     if (!result.ok) {
-      toast.error(result.error)
+      toast.error(translateApiError(result.error, t))
       return
     }
     setSession(result.data)
@@ -91,15 +95,8 @@ export function LiveRoomPage({ id }: { id: string }) {
     {joinWindowOpen && canJoin && session.status !== 'cancelled' && session.status !== 'ended' && <>
       {isTeacher && session.status === 'scheduled' && <button className="button-primary live-start-button" type="button" onClick={() => void changeStatus('live')}>Démarrer le live <Radio aria-hidden="true"/></button>}
       {isTeacher && session.status === 'live' && <button className="button-destructive live-end-button" type="button" onClick={() => void changeStatus('ended')}>Terminer le live</button>}
-      {session.provider === 'external'
-        ? <div className="live-room-layout"><div className="live-external-room"><div className="live-video-placeholder"><ExternalLink aria-hidden="true"/><h2>Votre séance est prête</h2><p>La séance s’ouvre dans un nouvel onglet. Gardez cette page ouverte pour consulter les questions et les ressources.</p></div>{session.externalUrl && <a className="button-primary" href={session.externalUrl} target="_blank" rel="noreferrer" onClick={() => {
-          if (isStudent && session.status === 'live') {
-            void api.recordLiveAttendance(session.id).then((result) => {
-              if (!result.ok) toast.error(result.error)
-            }).catch(() => toast.error(t('unknownError')))
-          }
-        }}>Rejoindre la séance <ExternalLink aria-hidden="true"/></a>}</div><LiveRoomPanels session={session} user={user} active={canJoin}/></div>
-        : <div className="live-room-layout"><LiveRoomClient session={session} user={user} active={canJoin}/><LiveRoomPanels session={session} user={user} active={canJoin}/></div>}
+      <div className="live-room-layout"><LiveRoomClient session={session} user={user} active={canJoin}/><LiveRoomPanels session={session} user={user} active={canJoin}/></div>
     </>}
+    {!joinWindowOpen && canJoin && <div className="live-room-archived-panels"><LiveRoomPanels session={session} user={user} active={false}/></div>}
   </section>
 }

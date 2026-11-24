@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import * as api from '@/lib/api'
 import { dataProvider } from '@/lib/data/config'
-import type { GroupPayment, LessonInput, LiveSession, Payment, User, WeeklySlot } from '@/types'
+import type { GroupPayment, LessonInput, LiveSession, LiveSessionInput, Payment, User, WeeklySlot } from '@/types'
 import { calculateQuizScore } from '@/lib/quiz-score'
 import { subjects, demoUsers } from '@/lib/mock-data'
 import { parseVideoUrl } from '@/lib/video/parse'
@@ -13,6 +13,7 @@ const teacher = demoUsers.find((user) => user.role === 'teacher')!
 const admin = demoUsers.find((user) => user.role === 'admin')!
 const otherTeacher: User = { ...teacher, id: 'teacher-2', email: 'other@edubac.tn' }
 const otherStudent: User = { ...student, id: 'student-2', name: 'Youssef Ben Ali', email: 'youssef@edubac.tn', phone: '+216 21 222 333' }
+const differentGroupStudent = demoUsers.find((user) => user.id === 'student-4')!
 
 function installStorage() {
   const values = new Map<string, string>()
@@ -40,8 +41,7 @@ function makeSession(overrides: Partial<LiveSession> = {}): LiveSession {
     date: '2026-02-10',
     startTime: '10:00',
     durationMinutes: 60,
-    provider: 'external',
-    externalUrl: 'https://meet.example.com/room',
+    provider: 'livekit',
     status: 'scheduled',
     replayUrl: 'https://example.com/replay',
     resources: [],
@@ -116,6 +116,7 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.useRealTimers()
   Reflect.deleteProperty(globalThis, 'window')
 })
@@ -154,7 +155,35 @@ describe('content access rules', () => {
   it('allows free lessons and blocks private lessons without an accepted group enrollment', async () => {
     await setCurrentUser(student)
     expect(await api.getLesson('lesson-1')).toMatchObject({ isFree: true })
+    expect(await api.getContentAccess({ type: 'lesson', lessonId: 'lesson-2' })).toBe(true)
+    expect((await api.getSubject('math'))?.chapters.flatMap((chapter) => chapter.lessons).some((lesson) => lesson.id === 'lesson-2')).toBe(true)
     await dataProvider.write('groupEnrollments', [])
+    expect(await api.getLesson('lesson-2')).toBeUndefined()
+    expect(await api.getContentAccess({ type: 'lesson', lessonId: 'lesson-2' })).toBe(false)
+    expect((await api.getSubject('math'))?.chapters.flatMap((chapter) => chapter.lessons).some((lesson) => lesson.id === 'lesson-2')).toBe(false)
+  })
+
+  it('gates exam corrections by class enrollment when payments are off and by subscription when enabled', async () => {
+    await setCurrentUser(student)
+    expect(await api.getContentAccess({ type: 'exam-correction', subjectId: 'math' })).toBe(true)
+    await dataProvider.write('groupEnrollments', [])
+    expect(await api.getContentAccess({ type: 'exam-correction', subjectId: 'math' })).toBe(false)
+
+    await enablePayments()
+    expect(await api.getContentAccess({ type: 'exam-correction', subjectId: 'math' })).toBe(false)
+    await dataProvider.write(`subscription:${student.id}`, { status: 'Active', scope: 'platform', expiresAt: '2026-02-28' })
+    expect(await api.getContentAccess({ type: 'exam-correction', subjectId: 'math' })).toBe(true)
+  })
+
+  it('limits unauthenticated visitors to published free preview lessons', async () => {
+    await setCurrentUser(null)
+
+    const subject = await api.getSubject('math')
+    const lessons = subject?.chapters.flatMap((chapter) => chapter.lessons) ?? []
+
+    expect(lessons.some((lesson) => lesson.id === 'lesson-1')).toBe(true)
+    expect(lessons.some((lesson) => lesson.id === 'lesson-2')).toBe(false)
+    expect(await api.getLesson('lesson-1')).toMatchObject({ isFree: true })
     expect(await api.getLesson('lesson-2')).toBeUndefined()
   })
 
@@ -173,6 +202,36 @@ describe('content access rules', () => {
     await setCurrentUser(student)
 
     expect(await api.getLiveSession('session-1')).toBeUndefined()
+  })
+
+  it('only exposes an integrated live room to accepted students in its group', async () => {
+    await dataProvider.write('liveSessions', [makeSession({ groupId: 'group-math-math' })])
+
+    await setCurrentUser(student)
+    expect(await api.getLiveSession('session-1')).toMatchObject({ provider: 'livekit' })
+    expect(await api.canJoinLiveSession('session-1')).toBe(true)
+
+    await setCurrentUser(differentGroupStudent)
+    expect(await api.getLiveSession('session-1')).toBeUndefined()
+    expect(await api.canJoinLiveSession('session-1')).toBe(false)
+
+    await setCurrentUser(null)
+    expect(await api.getLiveSession('session-1')).toBeUndefined()
+    expect(await api.canJoinLiveSession('session-1')).toBe(false)
+  })
+
+  it('migrates a legacy external session to an in-platform LiveKit room without retaining its link', async () => {
+    const oldSession = {
+      ...makeSession({ groupId: 'group-math-math' }),
+      provider: 'external',
+      externalUrl: 'https://teams.microsoft.com/l/meetup-join/example',
+    }
+    window.localStorage.setItem('edubac:v3:liveSessions', JSON.stringify([oldSession]))
+    await setCurrentUser(teacher)
+
+    const migrated = await api.getLiveSession('session-1')
+    expect(migrated).toMatchObject({ provider: 'livekit' })
+    expect(migrated).not.toHaveProperty('externalUrl')
   })
 
   it('marks an expired platform subscription and keeps group content payment-gated when enabled', async () => {
@@ -235,6 +294,106 @@ describe('payments and roles', () => {
 })
 
 describe('teacher ownership and quiz scoring', () => {
+  it('creates only integrated live rooms and requires an owned matching group', async () => {
+    await setCurrentUser(teacher)
+    const session: LiveSessionInput = {
+      title: 'Cours en direct',
+      description: '',
+      subjectId: 'math',
+      groupId: 'group-math-math',
+      date: '2026-02-01',
+      startTime: '18:00',
+      durationMinutes: 60,
+      provider: 'livekit',
+      resources: [],
+    }
+
+    const created = await api.createLiveSession(session)
+    expect(created).toMatchObject({ ok: true, data: { provider: 'livekit' } })
+    if (created.ok) {
+      expect(await api.updateLiveSession(created.data.id, { groupId: 'group-science-math' }))
+        .toMatchObject({ ok: false, error: 'Cette classe ne vous appartient pas.' })
+    }
+    expect(await api.createLiveSession({ ...session, groupId: 'group-science-math' }))
+      .toMatchObject({ ok: false, error: 'Cette classe ne vous appartient pas.' })
+    expect(await api.createLiveSession({
+      ...session,
+      provider: 'external',
+      externalUrl: 'https://teams.microsoft.com/l/meetup-join/example',
+    } as unknown as LiveSessionInput))
+      .toMatchObject({ ok: false })
+  })
+
+  it('stores group files outside localStorage and restricts downloads to group members', async () => {
+    const file = new File(['contenu'], 'fiche.pdf', { type: 'application/pdf' })
+    vi.spyOn(dataProvider, 'writeAttachment').mockResolvedValue({ ok: true, data: undefined })
+    vi.spyOn(dataProvider, 'readAttachment').mockResolvedValue({
+      ok: true,
+      data: new Blob(['contenu'], { type: 'application/pdf' }),
+    })
+    await setCurrentUser(teacher)
+    const created = await api.addGroupMaterial('group-math-math', 'Fiche de révision', file)
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+
+    await setCurrentUser(student)
+    expect(await api.getGroupMaterials('group-math-math')).toHaveLength(1)
+    expect(await api.downloadGroupMaterial(created.data.id)).toMatchObject({
+      ok: true,
+      data: { name: 'fiche.pdf', mimeType: 'application/pdf' },
+    })
+
+    await setCurrentUser(differentGroupStudent)
+    expect(await api.getGroupMaterials('group-math-math')).toEqual([])
+    expect(await api.downloadGroupMaterial(created.data.id)).toMatchObject({ ok: false })
+  })
+
+  it('rejects oversized and executable educational uploads before writing files', async () => {
+    await setCurrentUser(teacher)
+    const writeFile = vi.spyOn(dataProvider, 'writeAttachment').mockResolvedValue({ ok: true, data: undefined })
+    const oversized = { name: 'cours.pdf', type: 'application/pdf', size: api.MAX_EDUCATIONAL_FILE_SIZE + 1 } as File
+    const executable = { name: 'cours.exe', type: 'application/pdf', size: 12 } as File
+
+    expect(await api.addGroupMaterial('group-math-math', 'Cours', oversized)).toMatchObject({
+      ok: false, error: 'Chaque fichier doit faire 10 Mo maximum.',
+    })
+    expect(await api.addGroupMaterial('group-math-math', 'Cours', executable)).toMatchObject({ ok: false })
+    expect(writeFile).not.toHaveBeenCalled()
+  })
+
+  it('attaches files to an integrated session and protects their downloads by enrollment', async () => {
+    const file = new File(['contenu'], 'exercice.pdf', { type: 'application/pdf' })
+    vi.spyOn(dataProvider, 'writeAttachment').mockResolvedValue({ ok: true, data: undefined })
+    vi.spyOn(dataProvider, 'readAttachment').mockResolvedValue({
+      ok: true,
+      data: new Blob(['contenu'], { type: 'application/pdf' }),
+    })
+    await setCurrentUser(teacher)
+    const created = await api.createLiveSessionWithFiles({
+      title: 'Révision en direct',
+      description: '',
+      subjectId: 'math',
+      groupId: 'group-math-math',
+      date: '2026-02-01',
+      startTime: '18:00',
+      durationMinutes: 60,
+      provider: 'livekit',
+      resources: [],
+    }, [file])
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+    const attachment = created.data.resources[0].attachment
+    expect(attachment).toMatchObject({ name: 'exercice.pdf', size: file.size })
+    if (!attachment) return
+
+    await setCurrentUser(student)
+    expect(await api.downloadLiveAttachment(created.data.id, attachment.storageId)).toMatchObject({
+      ok: true, data: { name: 'exercice.pdf' },
+    })
+    await setCurrentUser(differentGroupStudent)
+    expect(await api.downloadLiveAttachment(created.data.id, attachment.storageId)).toMatchObject({ ok: false })
+  })
+
   it('prevents a teacher from deleting another teacher’s lesson', async () => {
     await setCurrentUser(otherTeacher)
     const result = await api.deleteLesson('lesson-1')

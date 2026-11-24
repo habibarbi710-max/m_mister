@@ -15,6 +15,7 @@ import type {
   GradeAuditEntry,
   GroupPayment,
   GroupAnnouncement,
+  GroupMaterial,
   Exam,
   Lesson,
   LessonDraft,
@@ -111,6 +112,7 @@ export type DataTables = {
   gradeAuditLog: GradeAuditEntry[]
   groupPayments: GroupPayment[]
   groupAnnouncements: GroupAnnouncement[]
+  groupMaterials: GroupMaterial[]
   theme: 'light' | 'dark'
 }
 
@@ -136,5 +138,9 @@ export type DataResult<T> =
 export interface DataProvider {
   read<K extends DataKey>(key: K): Promise<DataResult<DataValue<K>>>
   write<K extends DataKey>(key: K, value: DataValue<K>): Promise<DataResult<void>>
+  readAttachment(id: string): Promise<DataResult<Blob | undefined>>
+  writeAttachment(id: string, value: Blob): Promise<DataResult<void>>
+  deleteAttachment(id: string): Promise<DataResult<void>>
+  clearAttachments(): Promise<DataResult<void>>
   reset(): Promise<DataResult<void>>
 }
