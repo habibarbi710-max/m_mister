@@ -6,7 +6,8 @@ const publicKeys = new Set([
   'subjects', 'lessons', 'lessonDrafts', 'deletedLessons', 'exams', 'liveSessions',
   'liveQuestions', 'liveAttendance', 'sections', 'classGroups', 'groupContentLinks',
   'schedulePolls', 'schedulePollVotes', 'groupAnnouncements', 'groupMaterials',
-  'settings',
+  'settings', 'teacherProfiles', 'teacherFollows', 'teacherAnnouncements',
+  'lessonRatings', 'lessonQuestions',
 ])
 
 const teacherKeys = new Set([
