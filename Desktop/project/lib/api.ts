@@ -944,16 +944,16 @@ export async function getUsers(): Promise<User[]> {
     const ids = profiles.map((profile) => profile.id)
     const { data: privates } = await supabase
       .from('profile_private')
-      .select('user_id, phone')
+      .select('user_id, phone, email')
       .in('user_id', ids)
-    const privateById = new Map((privates ?? []).map((item) => [item.user_id, item.phone]))
+    const privateById = new Map((privates ?? []).map((item) => [item.user_id, { phone: item.phone, email: item.email }]))
     const { data: sections } = await supabase.from('sections').select('id, name')
     const sectionById = new Map((sections ?? []).map((item) => [item.id, item.name]))
     return profiles.map((profile) => ({
       id: profile.id,
       name: profile.full_name,
-      email: '',
-      phone: privateById.get(profile.id) ?? '',
+      phone: privateById.get(profile.id)?.phone ?? '',
+      email: privateById.get(profile.id)?.email ?? '',
       section: sectionById.get(profile.section_id) ?? 'Non renseignée',
       sectionId: profile.section_id ?? undefined,
       role: profile.role,
