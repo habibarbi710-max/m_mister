@@ -4,6 +4,26 @@ import { NextResponse } from 'next/server'
 import { getSupabaseEnvironment } from '@/lib/supabase/env'
 
 export async function proxy(request: NextRequest) {
+  const privateSiteKey = process.env.PRIVATE_SITE_KEY
+  if (privateSiteKey) {
+    if (request.nextUrl.searchParams.get('key') === privateSiteKey) {
+      request.nextUrl.searchParams.delete('key')
+      const response = NextResponse.redirect(request.nextUrl)
+      response.cookies.set('private-site-access', '1', {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 60 * 60 * 24 * 7,
+        path: '/',
+      })
+      return response
+    }
+
+    if (request.cookies.get('private-site-access')?.value !== '1') {
+      return new NextResponse('Not Found', { status: 404 })
+    }
+  }
+
   const environment = getSupabaseEnvironment()
   if (!environment) return NextResponse.next({ request })
 
@@ -27,18 +47,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    '/dashboard/:path*',
-    '/subjects/:path*',
-    '/lessons/:path*',
-    '/exams/:path*',
-    '/live/:path*',
-    '/profile/:path*',
-    '/student/:path*',
-    '/groups/:path*',
-    '/messages/:path*',
-    '/notifications/:path*',
-    '/teacher/:path*',
-    '/admin/:path*',
-  ],
+  matcher: ['/', '/((?!_next/static|_next/image|favicon.ico).*)'],
 }
