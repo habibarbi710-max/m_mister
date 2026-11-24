@@ -53,7 +53,19 @@ export async function authLogin(identifier: string, password: string): Promise<A
     const { error } = await supabase.auth.signInWithPassword(credentials)
     if (error) return { ok: false, error: authErrorMessage(`${error.code ?? ''} ${error.message}`) }
     const user = await getCurrentUser()
-    if (!user) return { ok: false, error: 'Email or password is incorrect' }
+    if (!user) {
+      const { data: authData } = await supabase.auth.getUser()
+      if (authData.user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('approval_status')
+          .eq('id', authData.user.id)
+          .maybeSingle()
+        if (profile?.approval_status === 'pending') return { ok: false, error: 'Votre compte attend la validation de l’administrateur.' }
+        if (profile?.approval_status === 'rejected') return { ok: false, error: 'Votre demande de compte a été refusée.' }
+      }
+      return { ok: false, error: 'Email or password is incorrect' }
+    }
     return { ok: true, data: user }
   }
 
@@ -104,7 +116,17 @@ export async function authRegister(input: { name: string; email: string; phone: 
     }
 
     const user = await getCurrentUser()
-    if (!user) return { ok: false, error: 'Authentication is temporarily unavailable' }
+    if (!user) {
+      const { data: authData } = await supabase.auth.getUser()
+      const { data: profile } = authData.user
+        ? await supabase.from('profiles').select('approval_status').eq('id', authData.user.id).maybeSingle()
+        : { data: null }
+      if (profile?.approval_status === 'pending') {
+        await supabase.auth.signOut({ scope: 'local' })
+        return { ok: false, error: 'Votre compte attend la validation de l’administrateur.' }
+      }
+      return { ok: false, error: 'Authentication is temporarily unavailable' }
+    }
     return { ok: true, data: user }
   }
 

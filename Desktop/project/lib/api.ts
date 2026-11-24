@@ -513,7 +513,7 @@ export async function getCurrentUser(): Promise<User | null> {
 
     const { data: profileData, error: profileError } = await supabase
       .from('profiles')
-      .select('full_name, section_id, role, blocked, avatar_url')
+      .select('full_name, section_id, role, blocked, avatar_url, approval_status')
       .eq('id', authData.user.id)
       .maybeSingle()
     if (profileError) throw new Error('Impossible de charger le profil.')
@@ -525,6 +525,7 @@ export async function getCurrentUser(): Promise<User | null> {
       role: unknown
       blocked: boolean
       avatar_url: string | null
+      approval_status?: 'pending' | 'approved' | 'rejected'
     }
     if (profile.role !== 'student' && profile.role !== 'teacher' && profile.role !== 'admin') {
       throw new Error('Le rôle du compte est invalide.')
@@ -532,6 +533,14 @@ export async function getCurrentUser(): Promise<User | null> {
     if (profile.blocked) {
       const { error } = await supabase.auth.signOut({ scope: 'local' })
       if (error) throw new Error('Impossible de fermer la session du compte bloqué.')
+      return null
+    }
+    if (profile.approval_status === 'pending') {
+      await supabase.auth.signOut({ scope: 'local' })
+      return null
+    }
+    if (profile.approval_status === 'rejected') {
+      await supabase.auth.signOut({ scope: 'local' })
       return null
     }
 
@@ -554,6 +563,7 @@ export async function getCurrentUser(): Promise<User | null> {
       role: profile.role,
       blocked: false,
       avatarUrl: profile.avatar_url ?? undefined,
+      approvalStatus: profile.approval_status ?? 'approved',
     }
   }
 
@@ -905,6 +915,12 @@ export async function saveVideoPosition(
 export async function blockUser(id: string, blocked: boolean): Promise<ApiResult<User[]>> {
   const admin = await getCurrentUser()
   if (admin?.role !== 'admin') return { ok: false, error: 'Admin permission required' }
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const { error } = await supabase.from('profiles').update({ blocked }).eq('id', id)
+    if (error) return { ok: false, error: 'Impossible de modifier le compte.' }
+    return { ok: true, data: await getUsers() }
+  }
   const users = await read('users')
   const next = users.map((user) => user.id === id ? { ...user, blocked } : user)
   await write('users', next)
@@ -917,7 +933,76 @@ export async function blockUser(id: string, blocked: boolean): Promise<ApiResult
 }
 export async function getUsers(): Promise<User[]> {
   const admin = await getCurrentUser()
-  return admin?.role === 'admin' ? (await read('users')).map(normalizeSeedUser) : []
+  if (admin?.role !== 'admin') return []
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const { data: profiles, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, section_id, role, blocked, avatar_url, approval_status')
+      .order('created_at', { ascending: false })
+    if (error || !profiles) return []
+    const ids = profiles.map((profile) => profile.id)
+    const { data: privates } = await supabase
+      .from('profile_private')
+      .select('user_id, phone')
+      .in('user_id', ids)
+    const privateById = new Map((privates ?? []).map((item) => [item.user_id, item.phone]))
+    const { data: sections } = await supabase.from('sections').select('id, name')
+    const sectionById = new Map((sections ?? []).map((item) => [item.id, item.name]))
+    return profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.full_name,
+      email: '',
+      phone: privateById.get(profile.id) ?? '',
+      section: sectionById.get(profile.section_id) ?? 'Non renseignée',
+      sectionId: profile.section_id ?? undefined,
+      role: profile.role,
+      blocked: profile.blocked,
+      avatarUrl: profile.avatar_url ?? undefined,
+      approvalStatus: profile.approval_status ?? 'approved',
+    })) as User[]
+  }
+  return (await read('users')).map(normalizeSeedUser)
+}
+
+export async function approveUser(id: string, approve: boolean): Promise<ApiResult<User[]>> {
+  const admin = await getCurrentUser()
+  if (admin?.role !== 'admin') return { ok: false, error: 'Admin permission required' }
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        approval_status: approve ? 'approved' : 'rejected',
+        approved_at: approve ? new Date().toISOString() : null,
+        approved_by: admin.id,
+      })
+      .eq('id', id)
+    if (error) return { ok: false, error: 'Impossible de mettre à jour la demande.' }
+    return { ok: true, data: await getUsers() }
+  }
+  const users = await read('users')
+  return { ok: true, data: users.map((user) => user.id === id
+    ? { ...user, approvalStatus: approve ? 'approved' : 'rejected' } as User
+    : user) }
+}
+
+export async function setUserRole(id: string, role: 'student' | 'teacher'): Promise<ApiResult<User[]>> {
+  const admin = await getCurrentUser()
+  if (admin?.role !== 'admin') return { ok: false, error: 'Admin permission required' }
+  if (getSupabaseEnvironment()) {
+    const supabase = getSupabaseBrowserClient()
+    const { error } = await supabase
+      .from('profiles')
+      .update({ role, approval_status: 'approved', blocked: false })
+      .eq('id', id)
+    if (error) return { ok: false, error: 'Impossible de modifier le rôle.' }
+    return { ok: true, data: await getUsers() }
+  }
+  const users = await read('users')
+  const next = users.map((user) => user.id === id ? { ...user, role, blocked: false } : user)
+  await write('users', next)
+  return { ok: true, data: next }
 }
 
 export async function createLiveSession(session: LiveSessionInput): Promise<ApiResult<LiveSession>> {

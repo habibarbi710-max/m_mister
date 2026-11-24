@@ -73,7 +73,12 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
         const message = result.error === 'Email or password is incorrect' ? t('loginError')
           : result.error === 'This email is already registered' || result.error === 'This email or phone is already registered' ? t('emailExists')
             : result.error === 'This account is blocked' ? t('accountBlocked')
-              : result.error === 'Email not confirmed' ? t('accountConfirmation') : t('unknownError')
+              : result.error === 'Email not confirmed' ? t('accountConfirmation')
+                : result.error === 'Votre compte attend la validation de l’administrateur.'
+                  ? 'Votre inscription a été enregistrée. Vous recevrez un accès après validation par l’administrateur.'
+                  : result.error === 'Votre demande de compte a été refusée.'
+                    ? 'Votre demande de compte a été refusée.'
+                    : t('unknownError')
         setServerError(message)
         toast.error(message)
         return

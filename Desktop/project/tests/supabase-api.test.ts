@@ -68,6 +68,7 @@ describe('Supabase profile loading', () => {
       role: 'student',
       blocked: false,
       avatarUrl: undefined,
+      approvalStatus: 'approved',
     })
     expect(mocks.client.from.mock.calls.map(([table]) => table)).toEqual([
       'profiles',

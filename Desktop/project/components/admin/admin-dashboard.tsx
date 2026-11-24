@@ -16,7 +16,7 @@ import { terminateLiveKitRoom } from '@/lib/livekit-client'
 import { AdminRelationshipsPage } from '@/components/relationships/relationship-pages'
 import { AdminGroupsPage } from '@/components/groups/group-pages'
 
-type AdminTab = 'overview' | 'payments' | 'students' | 'teachers' | 'content' | 'sessions' | 'groups' | 'settings' | 'relationships'
+type AdminTab = 'overview' | 'pending' | 'payments' | 'students' | 'teachers' | 'content' | 'sessions' | 'groups' | 'settings' | 'relationships'
 
 export function AdminDashboard() {
   const { t } = useLanguage()
@@ -39,7 +39,8 @@ export function AdminDashboard() {
     setPaymentsEnabled(settings.paymentsEnabled === true)
   }
   useEffect(() => { void refresh() }, [])
-  const tabs: Array<[AdminTab, string]> = [['overview', t('adminHome')], ['groups', 'Filières et classes'], ['payments', t('paymentHistory')], ['students', t('students')], ['teachers', t('teachers')], ['content', t('courses')], ['sessions', t('sessions')], ['relationships', 'Modération et engagements'], ['settings', t('settings')]]
+  const tabs: Array<[AdminTab, string]> = [['overview', t('adminHome')], ['pending', 'Demandes d’inscription'], ['groups', 'Filières et classes'], ['payments', t('paymentHistory')], ['students', t('students')], ['teachers', t('teachers')], ['content', t('courses')], ['sessions', t('sessions')], ['relationships', 'Modération et engagements'], ['settings', t('settings')]]
+  const pendingUsers = users.filter((user) => user.approvalStatus === 'pending')
   const filteredStudents = users.filter((user) => user.role === 'student'
     && `${user.name} ${user.email} ${user.phone}`.toLowerCase().includes(query.toLowerCase())
     && (sectionFilter === 'all' || user.section === sectionFilter))
@@ -61,6 +62,7 @@ export function AdminDashboard() {
         ...(paymentsEnabled ? [[t('amount'), metrics?.revenue ?? 0], [t('paymentPending'), metrics?.pendingPayments ?? 0]] : []),
         ['Séances ce mois', metrics?.liveSessionsThisMonth ?? 0],
       ].map(([label, value]) => <article className="stat-card" key={String(label)}><span>{label}</span><b>{value}</b></article>)}</div>}
+      {tab === 'pending' && <section className="admin-table-card"><div className="responsive-table"><table><thead><tr><th>Nom</th><th>Téléphone</th><th>Filière</th><th>Contacter</th><th>Décision</th></tr></thead><tbody>{pendingUsers.map((pending) => <tr key={pending.id}><td>{pending.name}</td><td>{pending.phone || '—'}</td><td>{pending.section}</td><td>{pending.phone ? <a className="button-soft" href={`tel:${pending.phone}`}>Appeler</a> : '—'}</td><td><button onClick={async () => { const result = await api.approveUser(pending.id, true); if (!result.ok) toast.error(translateApiError(result.error, t)); await refresh(); if (result.ok) toast.success('Compte approuvé.') }}>Approuver</button><button className="button-soft" onClick={async () => { const result = await api.approveUser(pending.id, false); if (!result.ok) toast.error(translateApiError(result.error, t)); await refresh(); if (result.ok) toast.success('Demande refusée.') }}>Refuser</button></td></tr>)}</tbody></table></div>{pendingUsers.length === 0 && <p>Aucune demande en attente.</p>}</section>}
       {tab === 'payments' && (paymentsEnabled ? <PaymentReview payments={payments} refresh={refresh}/>
         : <div className="empty-state"><h2>Paiements désactivés</h2><p>Activez les paiements dans les paramètres pour afficher les demandes.</p></div>)}
       {tab === 'groups' && <AdminGroupsPage/>}
@@ -147,7 +149,12 @@ function TeacherManagement({ users, subjects, refresh }: { users: User[]; subjec
     toast.success(t('subjectsAssigned'))
   }
   const teachers = users.filter((user) => user.role === 'teacher')
-  return <section className="admin-table-card"><h2>{t('teachers')}</h2><form onSubmit={handleSubmit(submit)} noValidate><Field label={t('name')} error={errors.name?.message}><input {...register('name')}/></Field><Field label={t('email')} error={errors.email?.message}><input type="email" {...register('email')}/></Field><Field label={t('phone')} error={errors.phone?.message}><input {...register('phone')}/></Field><Field label={t('password')} error={errors.password?.message}><input type="password" {...register('password')}/></Field><Field label={t('section')} error={errors.section?.message}><select {...register('section')}>{sectionValues.map((section) => <option value={section} key={section}>{section}</option>)}</select></Field><button disabled={isSubmitting}>{isSubmitting ? t('loading') : t('register')}</button></form>
+  const approvedStudents = users.filter((user) => user.role === 'student' && user.approvalStatus !== 'pending')
+  return <section className="admin-table-card"><h2>{t('teachers')}</h2>
+    <h3>Activer un professeur approuvé</h3>
+    <div className="responsive-table"><table><thead><tr><th>Utilisateur approuvé</th><th>Filière</th><th>Action</th></tr></thead><tbody>{approvedStudents.map((student) => <tr key={student.id}><td>{student.name}</td><td>{student.section}</td><td><button onClick={async () => { const result = await api.setUserRole(student.id, 'teacher'); if (!result.ok) toast.error(translateApiError(result.error, t)); await refresh(); if (result.ok) toast.success('Compte professeur activé.') }}>Activer comme professeur</button></td></tr>)}</tbody></table></div>
+    {approvedStudents.length === 0 && <p>Aucun utilisateur approuvé disponible.</p>}
+    <h3>Créer un compte professeur</h3><form onSubmit={handleSubmit(submit)} noValidate><Field label={t('name')} error={errors.name?.message}><input {...register('name')}/></Field><Field label={t('email')} error={errors.email?.message}><input type="email" {...register('email')}/></Field><Field label={t('phone')} error={errors.phone?.message}><input {...register('phone')}/></Field><Field label={t('password')} error={errors.password?.message}><input type="password" {...register('password')}/></Field><Field label={t('section')} error={errors.section?.message}><select {...register('section')}>{sectionValues.map((section) => <option value={section} key={section}>{section}</option>)}</select></Field><button disabled={isSubmitting}>{isSubmitting ? t('loading') : t('register')}</button></form>
     <label>{t('assignSubjects')}<select value={selectedTeacher} onChange={(event) => setSelectedTeacher(event.target.value)}><option value="">{t('teachers')}</option>{teachers.map((teacher) => <option value={teacher.id} key={teacher.id}>{teacher.name}</option>)}</select></label>
     {subjects.map((subject) => <label key={subject.id}><input type="checkbox" checked={assigned.includes(subject.id)} onChange={(event) => setAssigned((current) => event.target.checked ? [...current, subject.id] : current.filter((id) => id !== subject.id))}/>{subject.titleFr}</label>)}<button onClick={() => void assign()} disabled={!selectedTeacher}>{t('assignSubjects')}</button>
   </section>

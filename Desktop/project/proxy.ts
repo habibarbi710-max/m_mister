@@ -25,9 +25,19 @@ export async function proxy(request: NextRequest) {
   const { data: claims, error } = await supabase.auth.getClaims()
   const pathname = request.nextUrl.pathname
   const publicAuthPage = pathname === '/login' || pathname === '/register'
+  const publicPage =
+    pathname === '/'
+    || pathname === '/pricing'
+    || pathname === '/exams'
+    || pathname === '/subjects'
+    || pathname.startsWith('/subjects/')
+    || pathname === '/groups'
+    || pathname.startsWith('/groups/')
+    || pathname === '/teachers'
+    || pathname.startsWith('/teachers/')
 
   if (!error && claims?.claims) return response
-  if (publicAuthPage) return response
+  if (publicAuthPage || publicPage) return response
 
   const loginUrl = request.nextUrl.clone()
   loginUrl.pathname = '/login'
