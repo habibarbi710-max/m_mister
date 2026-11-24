@@ -4,26 +4,6 @@ import { NextResponse } from 'next/server'
 import { getSupabaseEnvironment } from '@/lib/supabase/env'
 
 export async function proxy(request: NextRequest) {
-  const privateSiteKey = process.env.PRIVATE_SITE_KEY
-  if (privateSiteKey) {
-    if (request.nextUrl.searchParams.get('key') === privateSiteKey) {
-      request.nextUrl.searchParams.delete('key')
-      const response = NextResponse.redirect(request.nextUrl)
-      response.cookies.set('private-site-access', '1', {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
-        maxAge: 60 * 60 * 24 * 7,
-        path: '/',
-      })
-      return response
-    }
-
-    if (request.cookies.get('private-site-access')?.value !== '1') {
-      return new NextResponse('Not Found', { status: 404 })
-    }
-  }
-
   const environment = getSupabaseEnvironment()
   if (!environment) return NextResponse.next({ request })
 
@@ -42,8 +22,18 @@ export async function proxy(request: NextRequest) {
     },
   })
 
-  await supabase.auth.getClaims()
-  return response
+  const { data: claims, error } = await supabase.auth.getClaims()
+  const pathname = request.nextUrl.pathname
+  const publicAuthPage = pathname === '/login' || pathname === '/register'
+
+  if (!error && claims?.claims) return response
+  if (publicAuthPage) return response
+
+  const loginUrl = request.nextUrl.clone()
+  loginUrl.pathname = '/login'
+  loginUrl.search = ''
+  loginUrl.searchParams.set('return', pathname + (request.nextUrl.search || ''))
+  return NextResponse.redirect(loginUrl)
 }
 
 export const config = {
