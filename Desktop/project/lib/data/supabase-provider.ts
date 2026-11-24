@@ -50,10 +50,10 @@ async function getCurrentUserId(): Promise<string | null> {
 
 export const supabaseProvider: DataProvider = {
   async read<K extends DataKey>(key: K): Promise<DataResult<DataValue<K>>> {
+    const scope = scopeForKey(key)
     try {
       const supabase = getSupabaseBrowserClient()
       const userId = await getCurrentUserId()
-      const scope = scopeForKey(key)
       const owner = ownerScope(key, scope, userId)
 
       let query = supabase.from('app_state').select('value').eq('key', key)
@@ -100,6 +100,7 @@ export const supabaseProvider: DataProvider = {
       if (key.startsWith('lastViewed:') || key.startsWith('videoPosition:')) return { ok: true, data: null as DataValue<K> }
       return { ok: true, data: (key === 'lang' ? 'fr' : null) as DataValue<K> }
     } catch (error) {
+      if (scope !== 'admin') return localProvider.read(key)
       return { ok: false, error: { code: 'storage-unavailable', message: error instanceof Error ? error.message : 'Supabase storage unavailable' } }
     }
   },
