@@ -1,6 +1,7 @@
 import { RoomServiceClient, TrackSource } from 'livekit-server-sdk'
 import { z } from 'zod'
 import { livekitAccessRequestSchema, roomNameForSession, validateTeacherCaller } from '@/lib/livekit-access'
+import { getAuthenticatedProfile, getServerLiveSession } from '@/lib/supabase/authz'
 
 const permissionRequestSchema = livekitAccessRequestSchema.extend({
   targetIdentity: z.string().min(1).max(128),
@@ -25,15 +26,19 @@ export async function POST(request: Request) {
   const parsed = permissionRequestSchema.safeParse(body)
   if (!parsed.success) return Response.json({ error: 'Les informations de permission sont invalides.' }, { status: 400 })
   const { session, caller, targetIdentity, grant } = parsed.data
-  const denied = validateTeacherCaller(caller, session)
+  const authContext = await getAuthenticatedProfile()
+  if (!authContext) return Response.json({ error: 'Vous devez être connecté.' }, { status: 401 })
+  const serverSession = await getServerLiveSession(session.id)
+  if (!serverSession) return Response.json({ error: 'Cette séance est introuvable.' }, { status: 404 })
+  if (caller.id !== authContext.userId || caller.role !== authContext.profile.role) {
+    return Response.json({ error: 'L’identité du participant est invalide.' }, { status: 403 })
+  }
+  const denied = validateTeacherCaller(caller, serverSession)
   if (denied) return Response.json({ error: denied }, { status: 403 })
-  if (session.provider !== 'livekit' || session.status !== 'live') {
+  if (serverSession.provider !== 'livekit' || serverSession.status !== 'live') {
     return Response.json({ error: 'Le direct doit être en cours pour gérer la prise de parole.' }, { status: 409 })
   }
   if (targetIdentity === session.teacherId) return Response.json({ error: 'L’enseignant ne peut pas se donner cette permission.' }, { status: 400 })
-  if (process.env.NODE_ENV === 'production') {
-    return Response.json({ error: 'L’authentification sécurisée du live n’est pas configurée.' }, { status: 503 })
-  }
   const config = liveKitConfiguration()
   if (!config) return Response.json({ error: 'La salle vidéo n’est pas configurée.' }, { status: 503 })
   const roomService = new RoomServiceClient(config.url, config.apiKey, config.apiSecret)

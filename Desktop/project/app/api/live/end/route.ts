@@ -1,5 +1,6 @@
 import { RoomServiceClient } from 'livekit-server-sdk'
 import { livekitAccessRequestSchema, roomNameForSession } from '@/lib/livekit-access'
+import { getAuthenticatedProfile, getServerLiveSession } from '@/lib/supabase/authz'
 
 function liveKitConfiguration() {
   const url = process.env.LIVEKIT_URL
@@ -19,13 +20,17 @@ export async function POST(request: Request) {
   const parsed = livekitAccessRequestSchema.safeParse(body)
   if (!parsed.success) return Response.json({ error: 'Les informations de connexion sont invalides.' }, { status: 400 })
   const { session, caller } = parsed.data
-  if (process.env.NODE_ENV === 'production') {
-    return Response.json({ error: 'L’authentification sécurisée du live n’est pas configurée.' }, { status: 503 })
+  const authContext = await getAuthenticatedProfile()
+  if (!authContext) return Response.json({ error: 'Vous devez être connecté.' }, { status: 401 })
+  const serverSession = await getServerLiveSession(session.id)
+  if (!serverSession) return Response.json({ error: 'Cette séance est introuvable.' }, { status: 404 })
+  if (caller.id !== authContext.userId || caller.role !== authContext.profile.role) {
+    return Response.json({ error: 'L’identité du participant est invalide.' }, { status: 403 })
   }
-  if (caller.role !== 'admin' && (caller.role !== 'teacher' || caller.id !== session.teacherId)) {
+  if (caller.role !== 'admin' && (caller.role !== 'teacher' || caller.id !== serverSession.teacherId)) {
     return Response.json({ error: 'Seul l’enseignant propriétaire ou un administrateur peut terminer cette salle.' }, { status: 403 })
   }
-  if (session.provider !== 'livekit' || session.status !== 'live') {
+  if (serverSession.provider !== 'livekit' || serverSession.status !== 'live') {
     return Response.json({ error: 'Seul un direct LiveKit en cours peut être terminé.' }, { status: 409 })
   }
   const config = liveKitConfiguration()

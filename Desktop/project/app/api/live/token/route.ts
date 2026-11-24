@@ -1,6 +1,7 @@
 import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk'
 import { livekitAccessRequestSchema, roomNameForSession, verifyLiveAccess } from '@/lib/livekit-access'
 import { MAX_STUDENTS_PER_SESSION } from '@/lib/livekit-config'
+import { getAuthenticatedProfile, getServerLiveSession, getServerSubscription } from '@/lib/supabase/authz'
 
 function liveKitConfiguration() {
   const url = process.env.LIVEKIT_URL
@@ -28,8 +29,26 @@ export async function POST(request: Request) {
   if (!config) return Response.json({ error: 'La salle vidéo n’est pas configurée. Ajoutez les variables LiveKit au fichier .env.local.' }, { status: 503 })
 
   const { session, caller } = parsed.data
+  const authContext = await getAuthenticatedProfile()
+  if (!authContext) return Response.json({ error: 'Vous devez être connecté.' }, { status: 401 })
+  const serverSession = await getServerLiveSession(session.id)
+  if (!serverSession) return Response.json({ error: 'Cette séance est introuvable.' }, { status: 404 })
+  if (caller.id !== authContext.userId) return Response.json({ error: 'L’identité du participant est invalide.' }, { status: 403 })
+  if (caller.role !== authContext.profile.role) return Response.json({ error: 'Le rôle du participant est invalide.' }, { status: 403 })
+
+  let subscriptionActive = false
+  if (authContext.profile.role === 'student') {
+    const subscription = await getServerSubscription(authContext.userId)
+    subscriptionActive = subscription?.status === 'Active'
+  }
+  const verifiedCaller = {
+    ...caller,
+    displayName: authContext.profile.name,
+    subscriptionActive,
+  }
+  const verifiedInput = { session: serverSession, caller: verifiedCaller }
   const roomName = roomNameForSession(session.id)
-  const initialDecision = verifyLiveAccess(parsed.data, 0)
+  const initialDecision = verifyLiveAccess(verifiedInput, 0)
   if (!initialDecision.ok) return Response.json({ error: initialDecision.error }, { status: initialDecision.status })
   const roomService = new RoomServiceClient(apiUrl(config.url), config.apiKey, config.apiSecret)
   try {
@@ -40,7 +59,7 @@ export async function POST(request: Request) {
     const participants = await roomService.listParticipants(roomName)
     const alreadyPresent = participants.some((participant) => participant.identity === caller.id)
     const currentStudents = participants.filter((participant) => participant.identity !== session.teacherId).length
-    const decision = verifyLiveAccess(parsed.data, alreadyPresent ? Math.max(0, currentStudents - 1) : currentStudents)
+    const decision = verifyLiveAccess(verifiedInput, alreadyPresent ? Math.max(0, currentStudents - 1) : currentStudents)
     if (!decision.ok) return Response.json({ error: decision.error }, { status: decision.status })
 
     const token = new AccessToken(config.apiKey, config.apiSecret, {

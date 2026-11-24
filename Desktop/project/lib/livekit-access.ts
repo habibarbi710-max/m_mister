@@ -31,11 +31,6 @@ export function verifyLiveAccess(
   input: LivekitAccessRequest,
   currentStudentCount: number,
 ): LivekitAccessDecision {
-  // The caller and subscription claims come from localStorage in this prototype. Production must
-  // replace this check with a verified server session and a database-backed role/subscription lookup.
-  if (process.env.NODE_ENV === 'production') {
-    return { ok: false, status: 503, error: 'L’authentification sécurisée du live n’est pas configurée.' }
-  }
   const parsed = livekitAccessRequestSchema.safeParse(input)
   if (!parsed.success) return { ok: false, status: 400, error: 'Les informations de connexion sont invalides.' }
   const { session, caller } = parsed.data
