@@ -151,7 +151,7 @@ drop policy if exists "users delete own attachments" on storage.objects;
 create policy "users delete own attachments"
 on storage.objects for delete
 to authenticated
-with check (
+using (
   bucket_id = 'app-attachments'
   and (storage.foldername(name))[1] = (select auth.uid())::text
 );
